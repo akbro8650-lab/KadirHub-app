@@ -35,6 +35,7 @@ abstract class FirestoreEmulatorTestBase {
 
     @Before
     open fun setUpFirebase() {
+        org.robolectric.shadows.ShadowLog.stream = System.out
         val context = ApplicationProvider.getApplicationContext<Context>()
         val resId = context.resources.getIdentifier(
             "firestore_database_id",

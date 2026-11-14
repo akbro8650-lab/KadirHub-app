@@ -48,11 +48,13 @@ service cloud.firestore {
              data.encryptedFileId is string && data.encryptedFileId.size() <= 128 &&
              data.sha256Checksum is string && data.sha256Checksum.size() <= 128 &&
              data.encryptionAlgorithm == 'AES-256-GCM' &&
-             data.status in ['approved', 'flagged', 'archived'] &&
+             data.status in ['pending', 'approved', 'flagged', 'archived'] &&
              data.downloadCount is int && data.downloadCount >= 0 &&
              data.averageRating is number && data.averageRating >= 0 && data.averageRating <= 5 &&
              data.reviewCount is int && data.reviewCount >= 0 &&
              data.uploaderUid is string && data.uploaderUid.size() >= 1 && data.uploaderUid.size() <= 128 &&
+             (!('uploaderName' in data) || (data.uploaderName is string && data.uploaderName.size() <= 80)) &&
+             (!('iconBase64' in data) || (data.iconBase64 is string && data.iconBase64.size() <= 150000)) &&
              data.createdAt is timestamp &&
              data.updatedAt is timestamp;
     }
@@ -61,12 +63,31 @@ service cloud.firestore {
       return data.catalogItemId is string && data.catalogItemId.size() >= 1 && data.catalogItemId.size() <= 128 &&
              data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
              data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 128 &&
-             data.byteSize is int && data.byteSize > 0 && data.byteSize <= 600000 &&
-             data.ciphertextBase64 is string && data.ciphertextBase64.size() >= 1 && data.ciphertextBase64.size() <= 900000 &&
-             data.ivBase64 is string && data.ivBase64.size() >= 1 && data.ivBase64.size() <= 128 &&
+             data.byteSize is int && data.byteSize > 0 && data.byteSize <= 52428800 &&
+             (!('chunkCount' in data) || (data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 200)) &&
+             (
+               (!('chunkCount' in data) || data.chunkCount == 0)
+                 ? (data.ciphertextBase64 is string && data.ciphertextBase64.size() >= 1 && data.ciphertextBase64.size() <= 900000 &&
+                    data.ivBase64 is string && data.ivBase64.size() >= 1 && data.ivBase64.size() <= 128)
+                 : (data.ciphertextBase64 is string && data.ciphertextBase64.size() == 0 &&
+                    data.ivBase64 is string && data.ivBase64.size() == 0)
+             ) &&
              data.sha256Checksum is string && data.sha256Checksum.size() == 64 &&
              data.encryptionAlgorithm == 'AES-256-GCM' &&
-             data.status in ['approved', 'flagged', 'archived'] &&
+             data.status in ['pending', 'approved', 'flagged', 'archived'] &&
+             data.uploaderUid is string && data.uploaderUid.size() >= 1 && data.uploaderUid.size() <= 128 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidEncryptedChunk(data) {
+      return data.fileId is string && data.fileId.size() >= 1 && data.fileId.size() <= 128 &&
+             data.catalogItemId is string && data.catalogItemId.size() >= 1 && data.catalogItemId.size() <= 128 &&
+             data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex < 200 &&
+             data.byteSize is int && data.byteSize > 0 && data.byteSize <= 550000 &&
+             data.ciphertextBase64 is string && data.ciphertextBase64.size() >= 1 && data.ciphertextBase64.size() <= 900000 &&
+             data.ivBase64 is string && data.ivBase64.size() >= 1 && data.ivBase64.size() <= 128 &&
+             data.status in ['pending', 'approved', 'flagged', 'archived'] &&
              data.uploaderUid is string && data.uploaderUid.size() >= 1 && data.uploaderUid.size() <= 128 &&
              data.createdAt is timestamp &&
              data.updatedAt is timestamp;
@@ -107,32 +128,48 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    // Published Apps & Links Catalog
+    // Published & Pending Apps/Links Catalog
     match /catalog_items/{itemId} {
-      allow get: if isSignedIn() && isValidId(itemId) && (resource == null || existing().status == 'approved' || isAdmin());
-      allow list: if isSignedIn() && (resource.data.status == 'approved' || isAdmin());
+      allow get: if isSignedIn() && isValidId(itemId) && (
+        resource == null ||
+        existing().status == 'approved' ||
+        existing().uploaderUid == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.status == 'approved' ||
+        resource.data.uploaderUid == request.auth.uid ||
+        isAdmin()
+      );
 
+      // Anyone signed in can upload, but non-admins MUST start in 'pending' status
       allow create: if isSignedIn() &&
                        isValidId(itemId) &&
                        isValidCatalogItem(incoming()) &&
                        incoming().uploaderUid == request.auth.uid &&
+                       incoming().downloadCount == 0 &&
+                       incoming().averageRating == 0 &&
+                       incoming().reviewCount == 0 &&
                        incoming().keys().hasAll([
                          'title', 'description', 'category', 'itemType', 'version',
                          'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
                          'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
                          'downloadCount', 'averageRating', 'reviewCount', 'uploaderUid',
-                         'createdAt', 'updatedAt'
+                         'uploaderName', 'iconBase64', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
                          'title', 'description', 'category', 'itemType', 'version',
                          'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
                          'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
                          'downloadCount', 'averageRating', 'reviewCount', 'uploaderUid',
-                         'createdAt', 'updatedAt'
+                         'uploaderName', 'iconBase64', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().createdAt <= request.time &&
                        incoming().updatedAt <= request.time &&
-                       isAdmin();
+                       (
+                         (isAdmin() && incoming().status in ['approved', 'pending']) ||
+                         (!isAdmin() && incoming().status == 'pending')
+                       );
 
       allow update: if isSignedIn() &&
                        isValidId(itemId) &&
@@ -140,66 +177,151 @@ service cloud.firestore {
                        incoming().uploaderUid == existing().uploaderUid &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().updatedAt <= request.time && (
+                         // Admin full edit / approval / moderation
                          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
                            'title', 'description', 'category', 'itemType', 'version',
                            'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
                            'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
-                           'downloadCount', 'averageRating', 'reviewCount', 'updatedAt'
+                           'downloadCount', 'averageRating', 'reviewCount', 'uploaderName',
+                           'iconBase64', 'updatedAt'
                          ])) ||
+                         // Uploader can edit their own upload (resets to 'pending' for admin approval)
+                         (existing().uploaderUid == request.auth.uid &&
+                          existing().status in ['pending', 'approved', 'flagged'] &&
+                          incoming().status == 'pending' &&
+                          incoming().downloadCount == existing().downloadCount &&
+                          incoming().averageRating == existing().averageRating &&
+                          incoming().reviewCount == existing().reviewCount &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'title', 'description', 'category', 'itemType', 'version',
+                            'fileSizeLabel', 'encryptedTargetUrl', 'urlIv', 'encryptedFileId',
+                            'sha256Checksum', 'encryptionAlgorithm', 'uploaderName',
+                            'iconBase64', 'status', 'updatedAt'
+                          ])) ||
+                         // Verified user download increment (+1 on approved items only)
                          (existing().status == 'approved' &&
                           incoming().status == 'approved' &&
                           incoming().downloadCount == existing().downloadCount + 1 &&
                           incoming().diff(existing()).affectedKeys().hasOnly(['downloadCount', 'updatedAt'])) ||
+                         // Review aggregate recomputation on approved items
                          (existing().status == 'approved' &&
                           incoming().status == 'approved' &&
                           incoming().diff(existing()).affectedKeys().hasOnly(['averageRating', 'reviewCount', 'updatedAt'])) ||
+                         // Community flag on approved items
                          (existing().status == 'approved' &&
                           incoming().status == 'flagged' &&
                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
                        );
 
-      allow delete: if isSignedIn() && isValidId(itemId) && isAdmin();
+      allow delete: if isSignedIn() && isValidId(itemId) && (existing().uploaderUid == request.auth.uid || isAdmin());
     }
 
-    // Encrypted File Vault Blobs
+    // Encrypted File Vault Blobs & Chunked Manifests (up to 50 MB)
     match /encrypted_files/{fileId} {
-      allow get: if isSignedIn() && isValidId(fileId) && (resource == null || existing().status == 'approved' || isAdmin());
-      allow list: if isSignedIn() && (resource.data.status == 'approved' || isAdmin());
+      allow get: if isSignedIn() && isValidId(fileId) && (
+        resource == null ||
+        existing().status == 'approved' ||
+        existing().uploaderUid == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.status == 'approved' ||
+        resource.data.uploaderUid == request.auth.uid ||
+        isAdmin()
+      );
 
       allow create: if isSignedIn() &&
                        isValidId(fileId) &&
                        isValidEncryptedFile(incoming()) &&
                        incoming().uploaderUid == request.auth.uid &&
                        incoming().keys().hasAll([
-                         'catalogItemId', 'fileName', 'mimeType', 'byteSize',
+                         'catalogItemId', 'fileName', 'mimeType', 'byteSize', 'chunkCount',
                          'ciphertextBase64', 'ivBase64', 'sha256Checksum',
                          'encryptionAlgorithm', 'status', 'uploaderUid',
                          'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'catalogItemId', 'fileName', 'mimeType', 'byteSize',
+                         'catalogItemId', 'fileName', 'mimeType', 'byteSize', 'chunkCount',
                          'ciphertextBase64', 'ivBase64', 'sha256Checksum',
                          'encryptionAlgorithm', 'status', 'uploaderUid',
                          'createdAt', 'updatedAt'
                        ]) &&
                        incoming().createdAt <= request.time &&
                        incoming().updatedAt <= request.time &&
-                       isAdmin();
+                       (
+                         (isAdmin() && incoming().status in ['approved', 'pending']) ||
+                         (!isAdmin() && incoming().status == 'pending')
+                       );
 
       allow update: if isSignedIn() &&
                        isValidId(fileId) &&
                        isValidEncryptedFile(incoming()) &&
                        incoming().uploaderUid == existing().uploaderUid &&
                        incoming().createdAt == existing().createdAt &&
-                       incoming().updatedAt <= request.time &&
-                       incoming().diff(existing()).affectedKeys().hasOnly([
-                         'catalogItemId', 'fileName', 'mimeType', 'byteSize',
-                         'ciphertextBase64', 'ivBase64', 'sha256Checksum',
-                         'encryptionAlgorithm', 'status', 'updatedAt'
-                       ]) &&
-                       isAdmin();
+                       incoming().updatedAt <= request.time && (
+                         (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+                           'catalogItemId', 'fileName', 'mimeType', 'byteSize', 'chunkCount',
+                           'ciphertextBase64', 'ivBase64', 'sha256Checksum',
+                           'encryptionAlgorithm', 'status', 'updatedAt'
+                         ])) ||
+                         (existing().uploaderUid == request.auth.uid &&
+                          incoming().status == 'pending' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+                       );
 
-      allow delete: if isSignedIn() && isValidId(fileId) && isAdmin();
+      allow delete: if isSignedIn() && isValidId(fileId) && (existing().uploaderUid == request.auth.uid || isAdmin());
+
+      // Encrypted Chunks Subcollection
+      match /chunks/{chunkId} {
+        allow get: if isSignedIn() && isValidId(fileId) && isValidId(chunkId) && (
+          resource == null ||
+          existing().status == 'approved' ||
+          existing().uploaderUid == request.auth.uid ||
+          isAdmin()
+        );
+        allow list: if isSignedIn() && isValidId(fileId) && (
+          resource.data.status == 'approved' ||
+          resource.data.uploaderUid == request.auth.uid ||
+          isAdmin()
+        );
+
+        allow create: if isSignedIn() &&
+                         isValidId(fileId) &&
+                         isValidId(chunkId) &&
+                         isValidEncryptedChunk(incoming()) &&
+                         incoming().fileId == fileId &&
+                         incoming().uploaderUid == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'fileId', 'catalogItemId', 'chunkIndex', 'byteSize',
+                           'ciphertextBase64', 'ivBase64', 'status', 'uploaderUid',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'fileId', 'catalogItemId', 'chunkIndex', 'byteSize',
+                           'ciphertextBase64', 'ivBase64', 'status', 'uploaderUid',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt <= request.time &&
+                         incoming().updatedAt <= request.time &&
+                         (
+                           (isAdmin() && incoming().status in ['approved', 'pending']) ||
+                           (!isAdmin() && incoming().status == 'pending')
+                         );
+
+        allow update: if isSignedIn() &&
+                         isValidId(fileId) &&
+                         isValidId(chunkId) &&
+                         isValidEncryptedChunk(incoming()) &&
+                         incoming().uploaderUid == existing().uploaderUid &&
+                         incoming().fileId == existing().fileId &&
+                         incoming().chunkIndex == existing().chunkIndex &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                         (isAdmin() || (existing().uploaderUid == request.auth.uid && incoming().status == 'pending'));
+
+        allow delete: if isSignedIn() && isValidId(fileId) && isValidId(chunkId) && (existing().uploaderUid == request.auth.uid || isAdmin());
+      }
     }
 
     // User Ratings & Reviews with Moderation

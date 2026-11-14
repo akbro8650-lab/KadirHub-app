@@ -6,6 +6,7 @@
     <string name="sign_in_subtitle">Encrypted app releases, verified links, community ratings, and safe downloads.</string>
     <string name="sign_in_google_cta">Sign in with Google</string>
     <string name="tab_explore">Explore</string>
+    <string name="tab_upload">Upload</string>
     <string name="tab_admin">Admin</string>
     <string name="tab_profile">Vault Info</string>
     <string name="search_placeholder">Search apps, links, tools...</string>

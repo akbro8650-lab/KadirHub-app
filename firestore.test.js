@@ -37,11 +37,13 @@ function validCatalogItem(uploaderUid, overrides = {}) {
     encryptedFileId: "",
     sha256Checksum: "a".repeat(64),
     encryptionAlgorithm: "AES-256-GCM",
-    status: "approved",
+    status: "pending",
     downloadCount: 0,
     averageRating: 0,
     reviewCount: 0,
     uploaderUid,
+    uploaderName: "Community Uploader",
+    iconBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -52,14 +54,32 @@ function validEncryptedFile(uploaderUid, catalogItemId, overrides = {}) {
   const now = serverNow();
   return {
     catalogItemId,
-    fileName: "creator_pack.zip",
-    mimeType: "application/zip",
+    fileName: "creator_pack.apk",
+    mimeType: "application/vnd.android.package-archive",
     byteSize: 2048,
+    chunkCount: 0,
     ciphertextBase64: "ZW5jcnlwdGVkX2ZpbGVfYnl0ZXM=",
     ivBase64: "MTIzNDU2Nzg5MDEy",
     sha256Checksum: "b".repeat(64),
     encryptionAlgorithm: "AES-256-GCM",
-    status: "approved",
+    status: "pending",
+    uploaderUid,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function validEncryptedChunk(uploaderUid, fileId, catalogItemId, chunkIndex = 0, overrides = {}) {
+  const now = serverNow();
+  return {
+    fileId,
+    catalogItemId,
+    chunkIndex,
+    byteSize: 450000,
+    ciphertextBase64: "ZW5jcnlwdGVkX2NodW5r",
+    ivBase64: "MTIzNDU2Nzg5MDEy",
+    status: "pending",
     uploaderUid,
     createdAt: now,
     updatedAt: now,
@@ -116,7 +136,7 @@ test("Unauthenticated user cannot list or read catalog_items", async () => {
   await assertFails(unauthDb.collection("catalog_items").doc("item_1").get());
 });
 
-test("Email spoofing with email_verified=false cannot upload catalog items", async () => {
+test("Email spoofing with email_verified=false cannot self-approve catalog items", async () => {
   const spoofDb = testEnv
     .authenticatedContext("spoof_uid", {
       email: ADMIN_EMAIL,
@@ -127,35 +147,165 @@ test("Email spoofing with email_verified=false cannot upload catalog items", asy
     spoofDb
       .collection("catalog_items")
       .doc("item_spoof")
-      .set(validCatalogItem("spoof_uid"))
+      .set(validCatalogItem("spoof_uid", { status: "approved" }))
   );
 });
 
-test("Regular user cannot upload catalog_items or encrypted_files or write admins", async () => {
+test("Regular user can upload pending APK/item & chunks (up to 50 MB) but cannot self-approve or write admins", async () => {
   const aliceDb = testEnv
     .authenticatedContext(ALICE_UID, { email: "alice@example.com", email_verified: true })
     .firestore();
+  const bobDb = testEnv
+    .authenticatedContext(BOB_UID, { email: "bob@example.com", email_verified: true })
+    .firestore();
+
+  // Cannot self-approve
   await assertFails(
     aliceDb
       .collection("catalog_items")
-      .doc("item_alice")
-      .set(validCatalogItem(ALICE_UID))
+      .doc("item_alice_self_approve")
+      .set(validCatalogItem(ALICE_UID, { status: "approved" }))
   );
   await assertFails(
     aliceDb
       .collection("encrypted_files")
-      .doc("file_alice")
-      .set(validEncryptedFile(ALICE_UID, "item_alice"))
+      .doc("file_alice_self_approve")
+      .set(validEncryptedFile(ALICE_UID, "item_alice_self_approve", { status: "approved" }))
   );
+  // Cannot write /admins
   await assertFails(
     aliceDb.collection("admins").doc(ALICE_UID).set({
       email: "alice@example.com",
       createdAt: serverNow(),
     })
   );
+
+  // Can upload pending chunked 25 MB APK
+  await assertSucceeds(
+    aliceDb
+      .collection("encrypted_files")
+      .doc("file_alice_apk")
+      .set(
+        validEncryptedFile(ALICE_UID, "item_alice_apk", {
+          byteSize: 25 * 1024 * 1024,
+          chunkCount: 59,
+          ciphertextBase64: "",
+          ivBase64: "",
+          status: "pending",
+        })
+      )
+  );
+  await assertSucceeds(
+    aliceDb
+      .collection("encrypted_files")
+      .doc("file_alice_apk")
+      .collection("chunks")
+      .doc("chunk_0")
+      .set(validEncryptedChunk(ALICE_UID, "file_alice_apk", "item_alice_apk", 0))
+  );
+  await assertSucceeds(
+    aliceDb
+      .collection("catalog_items")
+      .doc("item_alice_apk")
+      .set(
+        validCatalogItem(ALICE_UID, {
+          itemType: "encrypted_file",
+          encryptedFileId: "file_alice_apk",
+          fileSizeLabel: "25.0 MB",
+          status: "pending",
+        })
+      )
+  );
+
+  // Exceeding 50 MB limit is rejected
+  await assertFails(
+    aliceDb
+      .collection("encrypted_files")
+      .doc("file_too_big")
+      .set(
+        validEncryptedFile(ALICE_UID, "item_alice_apk", {
+          byteSize: 60 * 1024 * 1024,
+          chunkCount: 135,
+          ciphertextBase64: "",
+          ivBase64: "",
+          status: "pending",
+        })
+      )
+  );
+
+  // Alice can query her own uploads (including pending)
+  await assertSucceeds(
+    aliceDb.collection("catalog_items").where("uploaderUid", "==", ALICE_UID).get()
+  );
+
+  // Bob cannot read Alice's pending APK or catalog item directly
+  await assertFails(bobDb.collection("catalog_items").doc("item_alice_apk").get());
+  await assertFails(bobDb.collection("encrypted_files").doc("file_alice_apk").get());
+  await assertFails(
+    bobDb
+      .collection("encrypted_files")
+      .doc("file_alice_apk")
+      .collection("chunks")
+      .doc("chunk_0")
+      .get()
+  );
 });
 
-test("Verified admin can create catalog_item and encrypted_file, and shadow ghost fields are rejected", async () => {
+test("Uploader can edit own upload (resets to pending), while other users cannot edit it, and admin can approve", async () => {
+  const aliceDb = testEnv
+    .authenticatedContext(ALICE_UID, { email: "alice@example.com", email_verified: true })
+    .firestore();
+  const bobDb = testEnv
+    .authenticatedContext(BOB_UID, { email: "bob@example.com", email_verified: true })
+    .firestore();
+  const adminDb = testEnv
+    .authenticatedContext(ADMIN_UID, { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+
+  await assertSucceeds(
+    aliceDb
+      .collection("catalog_items")
+      .doc("item_alice_edit")
+      .set(validCatalogItem(ALICE_UID, { status: "pending" }))
+  );
+
+  // Admin approves Alice's upload
+  await assertSucceeds(
+    adminDb.collection("catalog_items").doc("item_alice_edit").update({
+      status: "approved",
+      updatedAt: serverNow(),
+    })
+  );
+
+  // Bob CANNOT edit Alice's upload
+  await assertFails(
+    bobDb.collection("catalog_items").doc("item_alice_edit").update({
+      title: "Hijacked App",
+      status: "pending",
+      updatedAt: serverNow(),
+    })
+  );
+
+  // Alice CAN edit her own upload, but CANNOT keep it approved — must reset to pending
+  await assertFails(
+    aliceDb.collection("catalog_items").doc("item_alice_edit").update({
+      title: "Alice App v2",
+      status: "approved",
+      updatedAt: serverNow(),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("catalog_items").doc("item_alice_edit").update({
+      title: "Alice App v2",
+      version: "2.0.0",
+      iconBase64: "bmV3X2ljb25fYmFzZTY0",
+      status: "pending",
+      updatedAt: serverNow(),
+    })
+  );
+});
+
+test("Verified admin can create approved catalog_item and encrypted_file, and shadow ghost fields are rejected", async () => {
   const adminDb = testEnv
     .authenticatedContext(ADMIN_UID, {
       email: ADMIN_EMAIL,
@@ -167,14 +317,20 @@ test("Verified admin can create catalog_item and encrypted_file, and shadow ghos
     adminDb
       .collection("catalog_items")
       .doc("item_1")
-      .set(validCatalogItem(ADMIN_UID, { itemType: "encrypted_file", encryptedFileId: "file_1" }))
+      .set(
+        validCatalogItem(ADMIN_UID, {
+          itemType: "encrypted_file",
+          encryptedFileId: "file_1",
+          status: "approved",
+        })
+      )
   );
 
   await assertSucceeds(
     adminDb
       .collection("encrypted_files")
       .doc("file_1")
-      .set(validEncryptedFile(ADMIN_UID, "item_1"))
+      .set(validEncryptedFile(ADMIN_UID, "item_1", { status: "approved" }))
   );
 
   // Shadow update / ghost field rejection
@@ -182,14 +338,17 @@ test("Verified admin can create catalog_item and encrypted_file, and shadow ghos
     adminDb
       .collection("catalog_items")
       .doc("item_ghost")
-      .set({ ...validCatalogItem(ADMIN_UID), ghostField: true })
+      .set({ ...validCatalogItem(ADMIN_UID, { status: "approved" }), ghostField: true })
   );
 });
 
 test("Regular user can query approved catalog_items, fails unfiltered list, and can increment downloadCount", async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
-    await db.collection("catalog_items").doc("item_approved").set(validCatalogItem(ADMIN_UID));
+    await db
+      .collection("catalog_items")
+      .doc("item_approved")
+      .set(validCatalogItem(ADMIN_UID, { status: "approved" }));
     await db
       .collection("catalog_items")
       .doc("item_archived")
@@ -230,7 +389,11 @@ test("Regular user can query approved catalog_items, fails unfiltered list, and 
 
 test("User review lifecycle: create visible review, flag by another user, hide by admin locks author edit", async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await ctx.firestore().collection("catalog_items").doc("item_1").set(validCatalogItem(ADMIN_UID));
+    await ctx
+      .firestore()
+      .collection("catalog_items")
+      .doc("item_1")
+      .set(validCatalogItem(ADMIN_UID, { status: "approved" }));
   });
 
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
@@ -244,7 +407,7 @@ test("User review lifecycle: create visible review, flag by another user, hide b
   await assertSucceeds(
     aliceDb.collection("reviews").doc(reviewId).set(validReview(ALICE_UID, "item_1"))
   );
-  // Cannot create review already hidden or impersonate Bob
+  // Cannot impersonate Bob
   await assertFails(
     aliceDb
       .collection("reviews")

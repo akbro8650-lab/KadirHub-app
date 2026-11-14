@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.SaveAlt
@@ -47,6 +48,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -64,6 +66,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -75,6 +78,9 @@ import com.example.R
 import com.example.data.model.CatalogItem
 import com.example.data.model.Review
 import com.example.data.repository.DecryptedVaultFile
+import com.example.ui.components.CatalogItemIcon
+import com.example.ui.components.StatusBadge
+import com.example.ui.components.formatFileSize
 import com.example.ui.viewmodel.DownloadActionResult
 import com.example.ui.viewmodel.UiState
 import java.io.File
@@ -86,10 +92,13 @@ fun ItemDetailScreen(
     item: CatalogItem,
     reviewsState: UiState<List<Review>>,
     currentUserId: String,
+    isAdminUnlocked: Boolean,
     isBusy: Boolean,
+    transferProgress: Float?,
     pendingDownloadResult: DownloadActionResult?,
     decryptedLinkPreview: String,
     onBack: () -> Unit,
+    onEditClick: (CatalogItem) -> Unit,
     onDownloadOrOpen: (CatalogItem) -> Unit,
     onClearPendingDownload: () -> Unit,
     onSubmitReview: (CatalogItem, Int, String) -> Unit,
@@ -108,6 +117,8 @@ fun ItemDetailScreen(
     var flagReason by remember { mutableStateOf("") }
     var readyFile by remember { mutableStateOf<DecryptedVaultFile?>(null) }
 
+    val canEdit = item.uploaderUid == currentUserId || isAdminUnlocked
+
     val saveDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
@@ -115,7 +126,11 @@ fun ItemDetailScreen(
         if (uri != null && fileToSave != null) {
             try {
                 context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(fileToSave.bytes)
+                    if (fileToSave.tempFile != null && fileToSave.tempFile.exists()) {
+                        fileToSave.tempFile.inputStream().use { input -> input.copyTo(out) }
+                    } else if (fileToSave.bytes != null) {
+                        out.write(fileToSave.bytes)
+                    }
                 }
                 Toast.makeText(
                     context,
@@ -177,6 +192,18 @@ fun ItemDetailScreen(
                 }
             },
             actions = {
+                if (canEdit) {
+                    IconButton(
+                        onClick = { onEditClick(item) },
+                        modifier = Modifier.testTag("detail_edit_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = "Edit upload",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
                 IconButton(
                     onClick = { showReportDialog = true },
                     modifier = Modifier.testTag("report_item_button")
@@ -221,20 +248,12 @@ fun ItemDetailScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.size(56.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = categoryIconFor(item.category),
-                                            contentDescription = item.category,
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                    }
-                                }
+                                CatalogItemIcon(
+                                    iconBase64 = item.iconBase64,
+                                    category = item.category,
+                                    size = 60.dp,
+                                    cornerRadius = 16.dp
+                                )
                                 Spacer(modifier = Modifier.width(14.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
@@ -243,12 +262,20 @@ fun ItemDetailScreen(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
+                                    val uploaderLabel = if (item.uploaderName.isNotBlank()) {
+                                        "Uploaded by ${item.uploaderName}"
+                                    } else {
+                                        item.creatorHandle
+                                    }
                                     Text(
-                                        text = "${item.category} • v${item.version} • ${item.creatorHandle}",
+                                        text = "${item.category} • v${item.version} • $uploaderLabel",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.primary,
                                         fontWeight = FontWeight.SemiBold
                                     )
+                                }
+                                if (item.status != "approved") {
+                                    StatusBadge(status = item.status)
                                 }
                             }
 
@@ -323,6 +350,23 @@ fun ItemDetailScreen(
                                 }
                             }
 
+                            if (isBusy && transferProgress != null) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                LinearProgressIndicator(
+                                    progress = { transferProgress.coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(CircleShape)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Decrypting & verifying chunks: ${(transferProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
                             Spacer(modifier = Modifier.height(16.dp))
 
                             Row(
@@ -388,134 +432,135 @@ fun ItemDetailScreen(
                     }
                 }
 
-                // Write a review card
-                item {
-                    Card(
-                        shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = stringResource(R.string.write_review_cta),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                (1..5).forEach { star ->
-                                    IconButton(
-                                        onClick = { ratingInput = star },
-                                        modifier = Modifier.testTag("star_rating_$star")
+                // Write a review card (enabled for approved items)
+                if (item.status == "approved") {
+                    item {
+                        Card(
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = stringResource(R.string.write_review_cta),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    (1..5).forEach { star ->
+                                        IconButton(
+                                            onClick = { ratingInput = star },
+                                            modifier = Modifier.testTag("star_rating_$star")
+                                        ) {
+                                            Icon(
+                                                imageVector = if (star <= ratingInput)
+                                                    Icons.Filled.Star
+                                                else
+                                                    Icons.Outlined.StarOutline,
+                                                contentDescription = "Rate $star stars",
+                                                tint = if (star <= ratingInput)
+                                                    MaterialTheme.colorScheme.tertiary
+                                                else
+                                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "$ratingInput / 5",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                }
+
+                                OutlinedTextField(
+                                    value = commentInput,
+                                    onValueChange = { commentInput = it },
+                                    label = { Text("Share your feedback") },
+                                    minLines = 2,
+                                    maxLines = 4,
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("review_comment_input")
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        onSubmitReview(item, ratingInput, commentInput)
+                                        commentInput = ""
+                                    },
+                                    enabled = !isBusy && commentInput.isNotBlank(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.End)
+                                        .testTag("submit_review_button")
+                                ) {
+                                    Text("Publish Review")
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Text(
+                            text = "Community Reviews",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+
+                    when (reviewsState) {
+                        is UiState.Loading -> {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                        }
+                        is UiState.Error -> {
+                            item {
+                                Text(
+                                    text = reviewsState.message,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                        is UiState.Success -> {
+                            if (reviewsState.data.isEmpty()) {
+                                item {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(16.dp),
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Icon(
-                                            imageVector = if (star <= ratingInput)
-                                                Icons.Filled.Star
-                                            else
-                                                Icons.Outlined.StarOutline,
-                                            contentDescription = "Rate $star stars",
-                                            tint = if (star <= ratingInput)
-                                                MaterialTheme.colorScheme.tertiary
-                                            else
-                                                MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(28.dp)
+                                        Text(
+                                            text = "No reviews yet. Be the first to rate this release!",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(16.dp)
                                         )
                                     }
                                 }
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "$ratingInput / 5",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.tertiary
-                                )
-                            }
-
-                            OutlinedTextField(
-                                value = commentInput,
-                                onValueChange = { commentInput = it },
-                                label = { Text("Share your feedback") },
-                                minLines = 2,
-                                maxLines = 4,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("review_comment_input")
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Button(
-                                onClick = {
-                                    onSubmitReview(item, ratingInput, commentInput)
-                                    commentInput = ""
-                                },
-                                enabled = !isBusy && commentInput.isNotBlank(),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .align(Alignment.End)
-                                    .testTag("submit_review_button")
-                            ) {
-                                Text("Publish Review")
-                            }
-                        }
-                    }
-                }
-
-                // Community Reviews Section
-                item {
-                    Text(
-                        text = "Community Reviews",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                }
-
-                when (reviewsState) {
-                    is UiState.Loading -> {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator()
-                            }
-                        }
-                    }
-                    is UiState.Error -> {
-                        item {
-                            Text(
-                                text = reviewsState.message,
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    }
-                    is UiState.Success -> {
-                        if (reviewsState.data.isEmpty()) {
-                            item {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = "No reviews yet. Be the first to rate this release!",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(16.dp)
+                            } else {
+                                items(reviewsState.data, key = { it.id }) { review ->
+                                    ReviewCard(
+                                        review = review,
+                                        isOwnReview = review.userId == currentUserId,
+                                        onFlagClick = { flagTargetReview = review }
                                     )
                                 }
-                            }
-                        } else {
-                            items(reviewsState.data, key = { it.id }) { review ->
-                                ReviewCard(
-                                    review = review,
-                                    isOwnReview = review.userId == currentUserId,
-                                    onFlagClick = { flagTargetReview = review }
-                                )
                             }
                         }
                     }
@@ -542,7 +587,7 @@ fun ItemDetailScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "${file.fileName} (${file.bytes.size} bytes) was decrypted with AES-256-GCM and passed SHA-256 verification.",
+                        text = "${file.fileName} (${formatFileSize(file.byteSize)}) was decrypted with AES-256-GCM and passed SHA-256 verification.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
@@ -565,20 +610,26 @@ fun ItemDetailScreen(
                     TextButton(onClick = {
                         try {
                             val dir = File(context.cacheDir, "vault_downloads").apply { mkdirs() }
-                            val cachedFile = File(dir, file.fileName)
-                            cachedFile.writeBytes(file.bytes)
+                            val namedFile = File(dir, file.fileName)
+                            if (file.tempFile != null && file.tempFile.exists()) {
+                                if (file.tempFile.absolutePath != namedFile.absolutePath) {
+                                    file.tempFile.copyTo(namedFile, overwrite = true)
+                                }
+                            } else if (file.bytes != null) {
+                                namedFile.writeBytes(file.bytes)
+                            }
                             val uri = FileProvider.getUriForFile(
                                 context,
                                 "${context.packageName}.fileprovider",
-                                cachedFile
+                                namedFile
                             )
                             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                                 setDataAndType(uri, file.mimeType)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
                             context.startActivity(Intent.createChooser(viewIntent, "Open ${file.fileName}"))
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "No viewer app found; use Save to Device.", Toast.LENGTH_LONG).show()
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "Use Save to Device to store and open this file.", Toast.LENGTH_LONG).show()
                         }
                     }) {
                         Text("Open")

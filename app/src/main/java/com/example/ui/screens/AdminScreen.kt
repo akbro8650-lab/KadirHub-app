@@ -1,9 +1,5 @@
 package com.example.ui.screens
 
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,19 +22,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
-import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Publish
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -61,7 +53,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +65,10 @@ import com.example.data.model.CatalogConstants
 import com.example.data.model.CatalogItem
 import com.example.data.model.ModerationReport
 import com.example.data.model.Review
+import com.example.data.repository.UploadFileSource
+import com.example.ui.components.CatalogItemIcon
+import com.example.ui.components.StatusBadge
+import com.example.ui.components.UploadOrEditItemForm
 import com.example.ui.viewmodel.UiState
 
 @Composable
@@ -81,9 +76,11 @@ fun AdminScreen(
     isUnlocked: Boolean,
     isServerAdmin: Boolean,
     isBusy: Boolean,
+    transferProgress: Float?,
     adminCatalogState: UiState<List<CatalogItem>>,
     adminReviewsState: UiState<List<Review>>,
     adminReportsState: UiState<List<ModerationReport>>,
+    pendingApprovalCount: Int,
     onUnlock: (String) -> Boolean,
     onLock: () -> Unit,
     onPublishItem: (
@@ -93,11 +90,12 @@ fun AdminScreen(
         version: String,
         targetUrl: String,
         fileSizeLabel: String,
-        attachedFileName: String?,
-        attachedMimeType: String?,
-        attachedBytes: ByteArray?,
+        iconBase64: String,
+        fileSource: UploadFileSource?,
         onSuccess: () -> Unit
     ) -> Unit,
+    onOpenItemDetail: (CatalogItem) -> Unit,
+    onEditItem: (CatalogItem) -> Unit,
     onSetItemStatus: (CatalogItem, String) -> Unit,
     onDeleteItem: (CatalogItem) -> Unit,
     onModerateReview: (Review, String) -> Unit,
@@ -114,11 +112,15 @@ fun AdminScreen(
         AdminDashboardContent(
             isServerAdmin = isServerAdmin,
             isBusy = isBusy,
+            transferProgress = transferProgress,
             adminCatalogState = adminCatalogState,
             adminReviewsState = adminReviewsState,
             adminReportsState = adminReportsState,
+            pendingApprovalCount = pendingApprovalCount,
             onLock = onLock,
             onPublishItem = onPublishItem,
+            onOpenItemDetail = onOpenItemDetail,
+            onEditItem = onEditItem,
             onSetItemStatus = onSetItemStatus,
             onDeleteItem = onDeleteItem,
             onModerateReview = onModerateReview,
@@ -264,9 +266,11 @@ private fun AdminPasswordGate(
 private fun AdminDashboardContent(
     isServerAdmin: Boolean,
     isBusy: Boolean,
+    transferProgress: Float?,
     adminCatalogState: UiState<List<CatalogItem>>,
     adminReviewsState: UiState<List<Review>>,
     adminReportsState: UiState<List<ModerationReport>>,
+    pendingApprovalCount: Int,
     onLock: () -> Unit,
     onPublishItem: (
         title: String,
@@ -275,11 +279,12 @@ private fun AdminDashboardContent(
         version: String,
         targetUrl: String,
         fileSizeLabel: String,
-        attachedFileName: String?,
-        attachedMimeType: String?,
-        attachedBytes: ByteArray?,
+        iconBase64: String,
+        fileSource: UploadFileSource?,
         onSuccess: () -> Unit
     ) -> Unit,
+    onOpenItemDetail: (CatalogItem) -> Unit,
+    onEditItem: (CatalogItem) -> Unit,
     onSetItemStatus: (CatalogItem, String) -> Unit,
     onDeleteItem: (CatalogItem) -> Unit,
     onModerateReview: (Review, String) -> Unit,
@@ -287,8 +292,9 @@ private fun AdminDashboardContent(
     onResolveReport: (ModerationReport, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var selectedSubTab by remember { mutableIntStateOf(0) }
-    val subTabs = listOf("Upload", "Catalog", "Moderation")
+    var selectedSubTab by remember { mutableIntStateOf(if (pendingApprovalCount > 0) 0 else 1) }
+    val approvalsTitle = if (pendingApprovalCount > 0) "Approvals ($pendingApprovalCount)" else "Approvals"
+    val subTabs = listOf(approvalsTitle, "Publish", "Moderation")
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -352,7 +358,7 @@ private fun AdminDashboardContent(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Sign in with admin Google account (${CatalogConstants.ADMIN_EMAIL}) for server-side Firestore write clearance.",
+                            text = "Sign in with admin Google account (${CatalogConstants.ADMIN_EMAIL}) for server-side Firestore approval & moderation access.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
@@ -366,20 +372,25 @@ private fun AdminDashboardContent(
                         selected = selectedSubTab == index,
                         onClick = { selectedSubTab = index },
                         text = { Text(title) },
-                        modifier = Modifier.testTag("admin_tab_${title.lowercase()}")
+                        modifier = Modifier.testTag("admin_tab_$index")
                     )
                 }
             }
 
             when (selectedSubTab) {
-                0 -> AdminUploadTab(
-                    isBusy = isBusy,
-                    onPublishItem = onPublishItem
-                )
-                1 -> AdminCatalogTab(
+                0 -> AdminCatalogTab(
                     catalogState = adminCatalogState,
+                    onOpenItemDetail = onOpenItemDetail,
+                    onEditItem = onEditItem,
                     onSetItemStatus = onSetItemStatus,
                     onDeleteItem = onDeleteItem
+                )
+                1 -> UploadOrEditItemForm(
+                    editingItem = null,
+                    isAdminMode = true,
+                    isBusy = isBusy,
+                    transferProgress = transferProgress,
+                    onSubmitNew = onPublishItem
                 )
                 2 -> AdminModerationTab(
                     reviewsState = adminReviewsState,
@@ -394,308 +405,15 @@ private fun AdminDashboardContent(
 }
 
 @Composable
-private fun AdminUploadTab(
-    isBusy: Boolean,
-    onPublishItem: (
-        title: String,
-        description: String,
-        category: String,
-        version: String,
-        targetUrl: String,
-        fileSizeLabel: String,
-        attachedFileName: String?,
-        attachedMimeType: String?,
-        attachedBytes: ByteArray?,
-        onSuccess: () -> Unit
-    ) -> Unit
-) {
-    val context = LocalContext.current
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("App") }
-    var version by remember { mutableStateOf("1.0.0") }
-    var targetUrl by remember { mutableStateOf("") }
-    var fileSizeLabel by remember { mutableStateOf("") }
-    var attachedFileName by remember { mutableStateOf<String?>(null) }
-    var attachedMimeType by remember { mutableStateOf<String?>(null) }
-    var attachedBytes by remember { mutableStateOf<ByteArray?>(null) }
-    var fileError by remember { mutableStateOf<String?>(null) }
-
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                var displayName = "vault_file.bin"
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (cursor.moveToFirst() && nameIdx >= 0) {
-                        displayName = cursor.getString(nameIdx) ?: displayName
-                    }
-                }
-                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (bytes == null || bytes.isEmpty()) {
-                    fileError = "Selected file is empty."
-                } else if (bytes.size > CatalogConstants.MAX_DIRECT_FILE_BYTES) {
-                    fileError = "Direct encrypted vault limit is 500 KB (${bytes.size / 1024} KB selected). Host large APKs externally and paste the link above."
-                } else {
-                    fileError = null
-                    attachedFileName = displayName
-                    attachedMimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
-                    attachedBytes = bytes
-                    if (fileSizeLabel.isBlank()) {
-                        val kb = (bytes.size / 1024.0).coerceAtLeast(0.1)
-                        fileSizeLabel = String.format(java.util.Locale.US, "%.1f KB", kb)
-                    }
-                }
-            } catch (e: Exception) {
-                fileError = "Could not read file: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Security,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Links and attached files are encrypted client-side with AES-256-GCM + SHA-256 before writing to Firestore.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-        }
-
-        item {
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                label = { Text("App or Link Title *") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("admin_title_input")
-            )
-        }
-
-        item {
-            Column {
-                Text(
-                    text = "Category",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(CatalogConstants.UPLOAD_CATEGORIES) { cat ->
-                        FilterChip(
-                            selected = category == cat,
-                            onClick = { category = cat },
-                            label = { Text(cat) }
-                        )
-                    }
-                }
-            }
-        }
-
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                OutlinedTextField(
-                    value = version,
-                    onValueChange = { version = it },
-                    label = { Text("Version") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = fileSizeLabel,
-                    onValueChange = { fileSizeLabel = it },
-                    label = { Text("Size (e.g. 12 MB)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        item {
-            OutlinedTextField(
-                value = targetUrl,
-                onValueChange = { targetUrl = it },
-                label = { Text("Download / Mirror Link URL") },
-                placeholder = { Text("https://...") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("admin_url_input")
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = description,
-                onValueChange = { description = it },
-                label = { Text("Description & Release Notes *") },
-                minLines = 3,
-                maxLines = 6,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("admin_description_input")
-            )
-        }
-
-        item {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                ),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Encrypted Vault File (Optional)",
-                                style = MaterialTheme.typography.titleSmall
-                            )
-                            Text(
-                                text = attachedFileName ?: "Attach a file ≤ 500 KB for direct AES-256-GCM storage",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (attachedFileName != null) {
-                            IconButton(onClick = {
-                                attachedFileName = null
-                                attachedMimeType = null
-                                attachedBytes = null
-                            }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Close,
-                                    contentDescription = "Remove attached file"
-                                )
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.AttachFile,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Select")
-                            }
-                        }
-                    }
-                    if (fileError != null) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = fileError!!,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-            }
-        }
-
-        item {
-            val canPublish = title.isNotBlank() &&
-                description.isNotBlank() &&
-                (targetUrl.isNotBlank() || attachedBytes != null) &&
-                !isBusy
-
-            Button(
-                onClick = {
-                    onPublishItem(
-                        title,
-                        description,
-                        category,
-                        version,
-                        targetUrl,
-                        fileSizeLabel,
-                        attachedFileName,
-                        attachedMimeType,
-                        attachedBytes
-                    ) {
-                        title = ""
-                        description = ""
-                        targetUrl = ""
-                        fileSizeLabel = ""
-                        attachedFileName = null
-                        attachedMimeType = null
-                        attachedBytes = null
-                    }
-                },
-                enabled = canPublish,
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("admin_publish_button")
-            ) {
-                if (isBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Filled.Publish,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Encrypt & Publish", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun AdminCatalogTab(
     catalogState: UiState<List<CatalogItem>>,
+    onOpenItemDetail: (CatalogItem) -> Unit,
+    onEditItem: (CatalogItem) -> Unit,
     onSetItemStatus: (CatalogItem, String) -> Unit,
     onDeleteItem: (CatalogItem) -> Unit
 ) {
+    var statusFilter by remember { mutableStateOf("all") }
+
     when (catalogState) {
         is UiState.Loading -> {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -708,23 +426,68 @@ private fun AdminCatalogTab(
             }
         }
         is UiState.Success -> {
-            if (catalogState.data.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "No uploaded items yet.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            val allItems = catalogState.data
+            val pendingCount = allItems.count { it.status == "pending" }
+            val filtered = if (statusFilter == "all") {
+                allItems.sortedByDescending { it.status == "pending" }
             } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(catalogState.data, key = { it.id }) { item ->
+                allItems.filter { it.status == statusFilter }
+            }
+
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val filters = listOf(
+                            "all" to "All (${allItems.size})",
+                            "pending" to "Pending ($pendingCount)",
+                            "approved" to "Approved",
+                            "flagged" to "Flagged",
+                            "archived" to "Archived"
+                        )
+                        items(filters) { (key, label) ->
+                            FilterChip(
+                                selected = statusFilter == key,
+                                onClick = { statusFilter = key },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("admin_filter_$key")
+                            )
+                        }
+                    }
+                }
+
+                if (filtered.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 36.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No releases in this status filter.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    items(filtered, key = { it.id }) { item ->
                         Card(
+                            onClick = { onOpenItemDetail(item) },
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(
+                                    1.dp,
+                                    if (item.status == "pending")
+                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.55f)
+                                    else
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                                    RoundedCornerShape(16.dp)
+                                )
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
                                 Row(
@@ -732,30 +495,71 @@ private fun AdminCatalogTab(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    CatalogItemIcon(
+                                        iconBase64 = item.iconBase64,
+                                        category = item.category,
+                                        size = 46.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(item.title, style = MaterialTheme.typography.titleMedium)
+                                        val uploader = item.uploaderName.ifBlank { item.creatorHandle }
                                         Text(
-                                            text = "${item.category} • v${item.version} • Status: ${item.status}",
+                                            text = "${item.category} • v${item.version} • By $uploader",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                    IconButton(onClick = { onDeleteItem(item) }) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Delete,
-                                            contentDescription = "Delete item",
-                                            tint = MaterialTheme.colorScheme.error
-                                        )
-                                    }
+                                    StatusBadge(status = item.status)
                                 }
+
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf("approved", "flagged", "archived").forEach { st ->
-                                        FilterChip(
-                                            selected = item.status == st,
-                                            onClick = { onSetItemStatus(item, st) },
-                                            label = { Text(st.replaceFirstChar { it.uppercase() }) }
-                                        )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        if (item.status != "approved") {
+                                            Button(
+                                                onClick = { onSetItemStatus(item, "approved") },
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier.testTag("admin_approve_${item.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.CheckCircle,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Approve")
+                                            }
+                                        }
+                                        if (item.status != "archived") {
+                                            OutlinedButton(
+                                                onClick = { onSetItemStatus(item, "archived") },
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Text("Archive")
+                                            }
+                                        }
+                                    }
+                                    Row {
+                                        IconButton(onClick = { onEditItem(item) }) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Edit,
+                                                contentDescription = "Edit release",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        IconButton(onClick = { onDeleteItem(item) }) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Delete,
+                                                contentDescription = "Delete item",
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        }
                                     }
                                 }
                             }

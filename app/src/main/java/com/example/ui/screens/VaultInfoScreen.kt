@@ -162,8 +162,8 @@ fun VaultInfoScreen(
                         )
                         SecuritySpecRow(
                             icon = Icons.Filled.GppGood,
-                            title = "Zero-Trust Moderation Rules",
-                            subtitle = "Firestore security rules isolate publishing to verified admins while supporting community flagging and review moderation."
+                            title = "Admin Approval & Zero-Trust Moderation",
+                            subtitle = "Community APK uploads (up to 50 MB) and links stay encrypted in a pending queue until approved by the admin, and uploaders can edit their own submissions for re-approval."
                         )
                     }
                 }

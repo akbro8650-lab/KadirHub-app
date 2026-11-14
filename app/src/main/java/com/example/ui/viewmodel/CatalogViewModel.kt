@@ -9,6 +9,7 @@ import com.example.data.model.ModerationReport
 import com.example.data.model.Review
 import com.example.data.repository.CatalogRepository
 import com.example.data.repository.DecryptedVaultFile
+import com.example.data.repository.UploadFileSource
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -59,6 +61,9 @@ class CatalogViewModel(
     private val _selectedItemId = MutableStateFlow<String?>(null)
     val selectedItemId: StateFlow<String?> = _selectedItemId.asStateFlow()
 
+    private val _editingItem = MutableStateFlow<CatalogItem?>(null)
+    val editingItem: StateFlow<CatalogItem?> = _editingItem.asStateFlow()
+
     private val _isAdminPanelUnlocked = MutableStateFlow(false)
     val isAdminPanelUnlocked: StateFlow<Boolean> = _isAdminPanelUnlocked.asStateFlow()
 
@@ -71,6 +76,9 @@ class CatalogViewModel(
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
+    private val _transferProgress = MutableStateFlow<Float?>(null)
+    val transferProgress: StateFlow<Float?> = _transferProgress.asStateFlow()
+
     private val _pendingDownloadResult = MutableStateFlow<DownloadActionResult?>(null)
     val pendingDownloadResult: StateFlow<DownloadActionResult?> = _pendingDownloadResult.asStateFlow()
 
@@ -82,6 +90,21 @@ class CatalogViewModel(
             val displayError = root ?: error
             Log.w(TAG, "Error observing catalog", displayError)
             emit(UiState.Error(displayError.message ?: "Unable to load catalog."))
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
+    val myUploadsState: StateFlow<UiState<List<CatalogItem>>> = repository.observeMyUploads()
+        .map<List<CatalogItem>, UiState<List<CatalogItem>>> { UiState.Success(it) }
+        .catch { error ->
+            val root = unwrapFirestoreError(error)
+            if (root == null && error is CancellationException) throw error
+            val displayError = root ?: error
+            Log.w(TAG, "Error observing my uploads", displayError)
+            emit(UiState.Error(displayError.message ?: "Unable to load your uploads."))
         }
         .stateIn(
             scope = viewModelScope,
@@ -105,7 +128,8 @@ class CatalogViewModel(
                     val matchesQuery = q.isEmpty() ||
                         item.title.lowercase().contains(q) ||
                         item.description.lowercase().contains(q) ||
-                        item.category.lowercase().contains(q)
+                        item.category.lowercase().contains(q) ||
+                        item.uploaderName.lowercase().contains(q)
                     matchesCategory && matchesQuery
                 }
                 val sorted = when (sort) {
@@ -122,12 +146,45 @@ class CatalogViewModel(
         initialValue = UiState.Loading
     )
 
+    private val adminActiveFlow: StateFlow<Boolean> = combine(
+        _isAdminPanelUnlocked,
+        _isServerAdmin
+    ) { unlocked, serverAdmin -> unlocked && serverAdmin }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), false)
+
+    val adminCatalogState: StateFlow<UiState<List<CatalogItem>>> = adminActiveFlow
+        .flatMapLatest { active ->
+            if (!active) flowOf(UiState.Success(emptyList()))
+            else repository.observeAllCatalogForAdmin()
+                .map<List<CatalogItem>, UiState<List<CatalogItem>>> { UiState.Success(it) }
+                .catch { error ->
+                    val root = unwrapFirestoreError(error)
+                    if (root == null && error is CancellationException) throw error
+                    emit(UiState.Error((root ?: error).message ?: "Failed to load admin catalog"))
+                }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
+    val pendingApprovalCount: StateFlow<Int> = adminCatalogState
+        .map { state ->
+            (state as? UiState.Success)?.data?.count { it.status == "pending" } ?: 0
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), 0)
+
     val selectedItem: StateFlow<CatalogItem?> = combine(
         rawCatalogState,
+        myUploadsState,
+        adminCatalogState,
         _selectedItemId
-    ) { state, id ->
-        if (id == null || state !is UiState.Success) null
-        else state.data.firstOrNull { it.id == id }
+    ) { approvedState, myState, adminState, id ->
+        if (id == null) return@combine null
+        (approvedState as? UiState.Success)?.data?.firstOrNull { it.id == id }
+            ?: (myState as? UiState.Success)?.data?.firstOrNull { it.id == id }
+            ?: (adminState as? UiState.Success)?.data?.firstOrNull { it.id == id }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
@@ -147,29 +204,6 @@ class CatalogViewModel(
                         emit(UiState.Error((root ?: error).message ?: "Failed to load reviews"))
                     }
             }
-        }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-            initialValue = UiState.Loading
-        )
-
-    private val adminActiveFlow: StateFlow<Boolean> = combine(
-        _isAdminPanelUnlocked,
-        _isServerAdmin
-    ) { unlocked, serverAdmin -> unlocked && serverAdmin }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), false)
-
-    val adminCatalogState: StateFlow<UiState<List<CatalogItem>>> = adminActiveFlow
-        .flatMapLatest { active ->
-            if (!active) flowOf(UiState.Success(emptyList()))
-            else repository.observeAllCatalogForAdmin()
-                .map<List<CatalogItem>, UiState<List<CatalogItem>>> { UiState.Success(it) }
-                .catch { error ->
-                    val root = unwrapFirestoreError(error)
-                    if (root == null && error is CancellationException) throw error
-                    emit(UiState.Error((root ?: error).message ?: "Failed to load admin catalog"))
-                }
         }
         .stateIn(
             scope = viewModelScope,
@@ -241,6 +275,14 @@ class CatalogViewModel(
         _selectedItemId.value = null
     }
 
+    fun startEditing(item: CatalogItem) {
+        _editingItem.value = item
+    }
+
+    fun stopEditing() {
+        _editingItem.value = null
+    }
+
     fun clearMessage() {
         _actionMessage.value = null
     }
@@ -276,15 +318,25 @@ class CatalogViewModel(
         }
     }
 
-    fun downloadOrOpenItem(item: CatalogItem) {
+    fun downloadOrOpenItem(item: CatalogItem, cacheDir: File? = null) {
         viewModelScope.launch {
             _isBusy.value = true
+            _transferProgress.value = if (item.itemType == "encrypted_file") 0.02f else null
             try {
                 val decryptedUrl = decryptItemUrl(item)
                 if (item.itemType == "encrypted_file" && item.encryptedFileId.isNotBlank()) {
-                    val fileResult = repository.downloadAndDecryptFile(item.encryptedFileId)
+                    val tempTarget = cacheDir?.let { dir ->
+                        File(File(dir, "vault_downloads").apply { mkdirs() }, "tmp_${item.id}.bin")
+                    }
+                    val fileResult = repository.downloadAndDecryptFile(
+                        encryptedFileId = item.encryptedFileId,
+                        targetTempFile = tempTarget,
+                        onProgress = { progress -> _transferProgress.value = progress }
+                    )
                     fileResult.onSuccess { decryptedFile ->
-                        repository.recordDownload(item.id)
+                        if (item.status == "approved") {
+                            runCatching { repository.recordDownload(item.id) }
+                        }
                         _pendingDownloadResult.value = DownloadActionResult.FileDecrypted(
                             file = decryptedFile,
                             fallbackUrl = decryptedUrl
@@ -293,7 +345,9 @@ class CatalogViewModel(
                         _actionMessage.value = err.message ?: "Failed to decrypt file."
                     }
                 } else if (decryptedUrl.isNotBlank()) {
-                    repository.recordDownload(item.id)
+                    if (item.status == "approved") {
+                        runCatching { repository.recordDownload(item.id) }
+                    }
                     _pendingDownloadResult.value = DownloadActionResult.OpenUrl(
                         url = decryptedUrl,
                         itemTitle = item.title
@@ -303,6 +357,7 @@ class CatalogViewModel(
                 }
             } finally {
                 _isBusy.value = false
+                _transferProgress.value = null
             }
         }
     }
@@ -365,13 +420,14 @@ class CatalogViewModel(
         version: String,
         targetUrl: String,
         fileSizeLabel: String,
-        attachedFileName: String?,
-        attachedMimeType: String?,
-        attachedBytes: ByteArray?,
+        iconBase64: String,
+        fileSource: UploadFileSource?,
+        publishAsApproved: Boolean,
         onPublished: () -> Unit
     ) {
         viewModelScope.launch {
             _isBusy.value = true
+            _transferProgress.value = if (fileSource != null) 0.02f else null
             repository.publishCatalogItem(
                 title = title,
                 description = description,
@@ -379,17 +435,89 @@ class CatalogViewModel(
                 version = version,
                 targetUrl = targetUrl,
                 fileSizeLabel = fileSizeLabel,
-                attachedFileName = attachedFileName,
-                attachedMimeType = attachedMimeType,
-                attachedBytes = attachedBytes
+                iconBase64 = iconBase64,
+                fileSource = fileSource,
+                publishAsApproved = publishAsApproved,
+                onProgress = { progress -> _transferProgress.value = progress }
             )
                 .onSuccess {
-                    _actionMessage.value = "Encrypted & published to KadirHub!"
+                    _actionMessage.value = if (publishAsApproved && _isServerAdmin.value) {
+                        "Encrypted & published live to KadirHub!"
+                    } else {
+                        "Encrypted & uploaded! Waiting for admin approval."
+                    }
                     onPublished()
                 }
                 .onFailure {
-                    _actionMessage.value = it.message ?: "Upload failed. Ensure your account has admin access."
+                    _actionMessage.value = it.message ?: "Upload failed."
                 }
+            _transferProgress.value = null
+            _isBusy.value = false
+        }
+    }
+
+    fun editCatalogItem(
+        existingItem: CatalogItem,
+        title: String,
+        description: String,
+        category: String,
+        version: String,
+        targetUrl: String,
+        fileSizeLabel: String,
+        iconBase64: String,
+        newFileSource: UploadFileSource?,
+        removeAttachedFile: Boolean,
+        preserveStatusIfAdmin: Boolean,
+        onEdited: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            _transferProgress.value = if (newFileSource != null) 0.02f else null
+            repository.editCatalogItem(
+                existingItem = existingItem,
+                title = title,
+                description = description,
+                category = category,
+                version = version,
+                targetUrl = targetUrl,
+                fileSizeLabel = fileSizeLabel,
+                iconBase64 = iconBase64,
+                newFileSource = newFileSource,
+                removeAttachedFile = removeAttachedFile,
+                preserveStatusIfAdmin = preserveStatusIfAdmin,
+                onProgress = { progress -> _transferProgress.value = progress }
+            )
+                .onSuccess {
+                    _editingItem.value = null
+                    _actionMessage.value = if (preserveStatusIfAdmin && _isServerAdmin.value) {
+                        "Release updated."
+                    } else {
+                        "Changes saved & sent for admin approval."
+                    }
+                    onEdited()
+                }
+                .onFailure {
+                    _actionMessage.value = it.message ?: "Failed to update upload."
+                }
+            _transferProgress.value = null
+            _isBusy.value = false
+        }
+    }
+
+    fun deleteItem(item: CatalogItem) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            repository.deleteCatalogItem(item.id, item.encryptedFileId)
+                .onSuccess {
+                    if (_selectedItemId.value == item.id) {
+                        _selectedItemId.value = null
+                    }
+                    if (_editingItem.value?.id == item.id) {
+                        _editingItem.value = null
+                    }
+                    _actionMessage.value = "${item.title} deleted."
+                }
+                .onFailure { _actionMessage.value = it.message ?: "Failed to delete item." }
             _isBusy.value = false
         }
     }
@@ -400,16 +528,6 @@ class CatalogViewModel(
             repository.adminModerateCatalogItem(item.id, newStatus, item.encryptedFileId)
                 .onSuccess { _actionMessage.value = "${item.title} marked as $newStatus." }
                 .onFailure { _actionMessage.value = it.message ?: "Failed to update item status." }
-            _isBusy.value = false
-        }
-    }
-
-    fun adminDeleteItem(item: CatalogItem) {
-        viewModelScope.launch {
-            _isBusy.value = true
-            repository.adminDeleteCatalogItem(item.id, item.encryptedFileId)
-                .onSuccess { _actionMessage.value = "${item.title} removed." }
-                .onFailure { _actionMessage.value = it.message ?: "Failed to delete item." }
             _isBusy.value = false
         }
     }

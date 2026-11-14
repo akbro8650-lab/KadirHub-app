@@ -26,12 +26,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.FolderZip
-import androidx.compose.material.icons.filled.Gamepad
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
@@ -55,7 +52,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -67,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.model.CatalogConstants
 import com.example.data.model.CatalogItem
+import com.example.ui.components.CatalogItemIcon
 import com.example.ui.viewmodel.SortOption
 import com.example.ui.viewmodel.UiState
 import java.util.Locale
@@ -350,7 +347,7 @@ private fun CreatorHeroCard(
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "$itemCount verified releases ready for encrypted download",
+                    text = "$itemCount approved releases ready for encrypted download",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -364,7 +361,6 @@ private fun CatalogItemCard(
     item: CatalogItem,
     onClick: () -> Unit
 ) {
-    val categoryIcon = categoryIconFor(item.category)
     Card(
         onClick = onClick,
         shape = RoundedCornerShape(18.dp),
@@ -386,20 +382,12 @@ private fun CatalogItemCard(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = categoryIcon,
-                            contentDescription = item.category,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
+                CatalogItemIcon(
+                    iconBase64 = item.iconBase64,
+                    category = item.category,
+                    size = 50.dp,
+                    cornerRadius = 14.dp
+                )
 
                 Spacer(modifier = Modifier.width(12.dp))
 
@@ -454,7 +442,7 @@ private fun CatalogItemCard(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (item.itemType == "encrypted_file") "Vault File" else "Link",
+                            text = if (item.itemType == "encrypted_file") "Vault APK" else "Link",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (item.itemType == "encrypted_file")
                                 MaterialTheme.colorScheme.onSecondaryContainer
@@ -517,10 +505,17 @@ private fun CatalogItemCard(
                     )
                 }
 
+                val attribution = if (item.uploaderName.isNotBlank()) {
+                    "By ${item.uploaderName}"
+                } else {
+                    item.creatorHandle
+                }
                 Text(
-                    text = item.creatorHandle,
+                    text = attribution,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -562,19 +557,11 @@ private fun EmptyCatalogCard(isFiltered: Boolean) {
                 text = if (isFiltered) {
                     "Try clearing your search or switching category filters."
                 } else {
-                    "Creator ${CatalogConstants.CREATOR_TIKTOK_HANDLE} can upload encrypted apps and links from the Admin tab."
+                    "Upload an APK or link from the Upload tab — admin ${CatalogConstants.CREATOR_TIKTOK_HANDLE} approves releases for everyone."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
-}
-
-fun categoryIconFor(category: String): ImageVector = when (category) {
-    "App" -> Icons.Filled.Apps
-    "Link" -> Icons.Filled.Link
-    "Tool" -> Icons.Filled.Build
-    "Game" -> Icons.Filled.Gamepad
-    else -> Icons.Filled.FolderZip
 }

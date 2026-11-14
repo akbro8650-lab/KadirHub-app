@@ -23,7 +23,7 @@
     },
     "CatalogItem": {
       "title": "CatalogItem",
-      "description": "An app package or curated link published by the admin with AES-256-GCM encrypted target metadata.",
+      "description": "An app package or curated link published by an admin or community uploader (pending admin approval) with AES-256-GCM encrypted target metadata and optional app icon.",
       "type": "object",
       "properties": {
         "title": {
@@ -54,7 +54,7 @@
         },
         "creatorHandle": {
           "type": "string",
-          "description": "Creator attribution handle (@kadirofficial007)."
+          "description": "Platform creator attribution handle (@kadirofficial007)."
         },
         "encryptedTargetUrl": {
           "type": "string",
@@ -79,8 +79,8 @@
         },
         "status": {
           "type": "string",
-          "enum": ["approved", "flagged", "archived"],
-          "description": "Moderation visibility status."
+          "enum": ["pending", "approved", "flagged", "archived"],
+          "description": "Moderation and approval visibility status."
         },
         "downloadCount": {
           "type": "integer",
@@ -96,7 +96,15 @@
         },
         "uploaderUid": {
           "type": "string",
-          "description": "Firebase Auth UID of the admin who uploaded the item."
+          "description": "Firebase Auth UID of the user or admin who uploaded the item."
+        },
+        "uploaderName": {
+          "type": "string",
+          "description": "Display name of the uploader."
+        },
+        "iconBase64": {
+          "type": "string",
+          "description": "Optional Base64-encoded compressed app icon image."
         },
         "createdAt": {
           "type": "string",
@@ -133,7 +141,7 @@
     },
     "EncryptedFile": {
       "title": "EncryptedFile",
-      "description": "AES-256-GCM encrypted file payload stored securely in Firestore with SHA-256 integrity checksum.",
+      "description": "AES-256-GCM encrypted file manifest stored in Firestore (supports single-document payloads <= 450 KB and chunked APKs/files up to 50 MB via /chunks subcollection).",
       "type": "object",
       "properties": {
         "catalogItemId": {
@@ -142,7 +150,7 @@
         },
         "fileName": {
           "type": "string",
-          "description": "Original file name."
+          "description": "Original file name (e.g., app-release.apk)."
         },
         "mimeType": {
           "type": "string",
@@ -150,19 +158,23 @@
         },
         "byteSize": {
           "type": "integer",
-          "description": "Plaintext byte length."
+          "description": "Plaintext byte length (up to 52,428,800 bytes / 50 MB)."
+        },
+        "chunkCount": {
+          "type": "integer",
+          "description": "0 for single-document ciphertextBase64 storage, or >= 1 when encrypted chunks are stored in /encrypted_files/{fileId}/chunks."
         },
         "ciphertextBase64": {
           "type": "string",
-          "description": "Base64 AES-256-GCM encrypted file bytes."
+          "description": "Base64 AES-256-GCM encrypted file bytes when chunkCount == 0, otherwise empty string."
         },
         "ivBase64": {
           "type": "string",
-          "description": "Base64 12-byte GCM initialization vector."
+          "description": "Base64 12-byte GCM initialization vector when chunkCount == 0, otherwise empty string."
         },
         "sha256Checksum": {
           "type": "string",
-          "description": "64-character SHA-256 hex digest of original plaintext file."
+          "description": "64-character SHA-256 hex digest of original complete plaintext file."
         },
         "encryptionAlgorithm": {
           "type": "string",
@@ -171,12 +183,12 @@
         },
         "status": {
           "type": "string",
-          "enum": ["approved", "flagged", "archived"],
-          "description": "Moderation status matching parent catalog item."
+          "enum": ["pending", "approved", "flagged", "archived"],
+          "description": "Moderation/approval status matching parent catalog item."
         },
         "uploaderUid": {
           "type": "string",
-          "description": "Admin UID who uploaded the encrypted file."
+          "description": "UID of the user or admin who uploaded the encrypted file."
         },
         "createdAt": {
           "type": "string",
@@ -198,6 +210,68 @@
         "ivBase64",
         "sha256Checksum",
         "encryptionAlgorithm",
+        "status",
+        "uploaderUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedFileChunk": {
+      "title": "EncryptedFileChunk",
+      "description": "Individual AES-256-GCM encrypted chunk of a larger APK or vault file stored under /encrypted_files/{fileId}/chunks/{chunkId}.",
+      "type": "object",
+      "properties": {
+        "fileId": {
+          "type": "string",
+          "description": "Parent /encrypted_files document ID."
+        },
+        "catalogItemId": {
+          "type": "string",
+          "description": "Parent /catalog_items document ID."
+        },
+        "chunkIndex": {
+          "type": "integer",
+          "description": "Zero-based sequential chunk index."
+        },
+        "byteSize": {
+          "type": "integer",
+          "description": "Plaintext byte length of this chunk."
+        },
+        "ciphertextBase64": {
+          "type": "string",
+          "description": "Base64 AES-256-GCM encrypted chunk bytes."
+        },
+        "ivBase64": {
+          "type": "string",
+          "description": "Base64 12-byte GCM initialization vector for this chunk."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "flagged", "archived"],
+          "description": "Moderation status matching parent catalog item."
+        },
+        "uploaderUid": {
+          "type": "string",
+          "description": "UID of the uploader."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "fileId",
+        "catalogItemId",
+        "chunkIndex",
+        "byteSize",
+        "ciphertextBase64",
+        "ivBase64",
         "status",
         "uploaderUid",
         "createdAt",
@@ -337,11 +411,15 @@
     },
     "/catalog_items/{itemId}": {
       "schema": { "$ref": "#/entities/CatalogItem" },
-      "description": "Curated apps and links with AES-256-GCM encrypted targets."
+      "description": "Community and admin uploaded apps/links with AES-256-GCM encrypted targets and admin approval gating."
     },
     "/encrypted_files/{fileId}": {
       "schema": { "$ref": "#/entities/EncryptedFile" },
-      "description": "AES-256-GCM encrypted file storage blobs."
+      "description": "AES-256-GCM encrypted file manifests (single-doc or chunked up to 50 MB)."
+    },
+    "/encrypted_files/{fileId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/EncryptedFileChunk" },
+      "description": "Encrypted chunks for APKs and large files."
     },
     "/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/Review" },

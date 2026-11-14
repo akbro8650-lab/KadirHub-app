@@ -20,11 +20,13 @@ data class CatalogItem(
     val encryptedFileId: String = "",
     val sha256Checksum: String = "",
     val encryptionAlgorithm: String = "AES-256-GCM",
-    val status: String = "approved",
+    val status: String = "pending",
     val downloadCount: Long = 0L,
     val averageRating: Double = 0.0,
     val reviewCount: Long = 0L,
     val uploaderUid: String = "",
+    val uploaderName: String = "",
+    val iconBase64: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -36,11 +38,27 @@ data class EncryptedFile(
     val fileName: String = "",
     val mimeType: String = "",
     val byteSize: Long = 0L,
+    val chunkCount: Long = 0L,
     val ciphertextBase64: String = "",
     val ivBase64: String = "",
     val sha256Checksum: String = "",
     val encryptionAlgorithm: String = "AES-256-GCM",
-    val status: String = "approved",
+    val status: String = "pending",
+    val uploaderUid: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
+data class EncryptedFileChunk(
+    @DocumentId val id: String = "",
+    val fileId: String = "",
+    val catalogItemId: String = "",
+    val chunkIndex: Long = 0L,
+    val byteSize: Long = 0L,
+    val ciphertextBase64: String = "",
+    val ivBase64: String = "",
+    val status: String = "pending",
     val uploaderUid: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -81,7 +99,9 @@ object CatalogConstants {
     const val CREATOR_TIKTOK_URL = "https://www.tiktok.com/@kadirofficial007"
     const val ADMIN_EMAIL = "kadir25.bd@gmail.com"
     const val ENCRYPTION_ALGO = "AES-256-GCM"
-    const val MAX_DIRECT_FILE_BYTES = 500_000
+    const val CHUNK_RAW_BYTES = 450_000
+    const val MAX_DIRECT_FILE_BYTES = 52_428_800L // 50 MB chunked AES-256-GCM limit
+    const val MAX_ICON_BASE64_CHARS = 120_000
     val CATEGORIES = listOf("All", "App", "Link", "Tool", "Game", "Resource")
     val UPLOAD_CATEGORIES = listOf("App", "Link", "Tool", "Game", "Resource")
 }
