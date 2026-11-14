@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">KadirHub</string>
+    <string name="creator_handle">@kadirofficial007</string>
+    <string name="creator_tagline">Curated by @kadirofficial007</string>
+    <string name="sign_in_headline">KadirHub Vault</string>
+    <string name="sign_in_subtitle">Encrypted app releases, verified links, community ratings, and safe downloads.</string>
+    <string name="sign_in_google_cta">Sign in with Google</string>
+    <string name="tab_explore">Explore</string>
+    <string name="tab_admin">Admin</string>
+    <string name="tab_profile">Vault Info</string>
+    <string name="search_placeholder">Search apps, links, tools...</string>
+    <string name="admin_lock_title">Admin Access Control</string>
+    <string name="admin_lock_subtitle">Enter the administrator panel password to unlock upload and content moderation controls.</string>
+    <string name="admin_password_label">Admin Password</string>
+    <string name="admin_unlock_cta">Unlock Dashboard</string>
+    <string name="admin_invalid_password">Incorrect admin password. Access denied.</string>
+    <string name="encryption_badge">AES-256-GCM Encrypted</string>
+    <string name="download_cta">Download &amp; Open</string>
+    <string name="open_link_cta">Decrypt &amp; Open Link</string>
+    <string name="write_review_cta">Rate &amp; Review</string>
+    <string name="report_content_cta">Report</string>
+</resources>

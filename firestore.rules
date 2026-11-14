@@ -1,0 +1,295 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Admin role resolved exclusively from verified email claim or trusted /admins/{uid} doc
+    function isAdmin() {
+      return isSignedIn() && (
+        ('email' in request.auth.token &&
+         request.auth.token.email == 'kadir25.bd@gmail.com' &&
+         request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // --- Entity Validators ---
+    function isValidCatalogItem(data) {
+      return data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.description is string && data.description.size() >= 1 && data.description.size() <= 2000 &&
+             data.category in ['App', 'Link', 'Tool', 'Game', 'Resource'] &&
+             data.itemType in ['link', 'encrypted_file'] &&
+             data.version is string && data.version.size() >= 1 && data.version.size() <= 40 &&
+             data.fileSizeLabel is string && data.fileSizeLabel.size() <= 40 &&
+             data.creatorHandle is string && data.creatorHandle.size() >= 1 && data.creatorHandle.size() <= 60 &&
+             data.encryptedTargetUrl is string && data.encryptedTargetUrl.size() <= 4096 &&
+             data.urlIv is string && data.urlIv.size() <= 128 &&
+             data.encryptedFileId is string && data.encryptedFileId.size() <= 128 &&
+             data.sha256Checksum is string && data.sha256Checksum.size() <= 128 &&
+             data.encryptionAlgorithm == 'AES-256-GCM' &&
+             data.status in ['approved', 'flagged', 'archived'] &&
+             data.downloadCount is int && data.downloadCount >= 0 &&
+             data.averageRating is number && data.averageRating >= 0 && data.averageRating <= 5 &&
+             data.reviewCount is int && data.reviewCount >= 0 &&
+             data.uploaderUid is string && data.uploaderUid.size() >= 1 && data.uploaderUid.size() <= 128 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidEncryptedFile(data) {
+      return data.catalogItemId is string && data.catalogItemId.size() >= 1 && data.catalogItemId.size() <= 128 &&
+             data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
+             data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 128 &&
+             data.byteSize is int && data.byteSize > 0 && data.byteSize <= 600000 &&
+             data.ciphertextBase64 is string && data.ciphertextBase64.size() >= 1 && data.ciphertextBase64.size() <= 900000 &&
+             data.ivBase64 is string && data.ivBase64.size() >= 1 && data.ivBase64.size() <= 128 &&
+             data.sha256Checksum is string && data.sha256Checksum.size() == 64 &&
+             data.encryptionAlgorithm == 'AES-256-GCM' &&
+             data.status in ['approved', 'flagged', 'archived'] &&
+             data.uploaderUid is string && data.uploaderUid.size() >= 1 && data.uploaderUid.size() <= 128 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidReview(data) {
+      return data.itemId is string && data.itemId.size() >= 1 && data.itemId.size() <= 128 &&
+             data.itemTitle is string && data.itemTitle.size() >= 1 && data.itemTitle.size() <= 120 &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+             data.rating is int && data.rating >= 1 && data.rating <= 5 &&
+             data.comment is string && data.comment.size() >= 1 && data.comment.size() <= 1000 &&
+             data.moderationStatus in ['visible', 'flagged', 'hidden'] &&
+             data.flagReason is string && data.flagReason.size() <= 300 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.targetType in ['catalog_item', 'review'] &&
+             data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
+             data.targetTitle is string && data.targetTitle.size() >= 1 && data.targetTitle.size() <= 120 &&
+             data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128 &&
+             data.reporterName is string && data.reporterName.size() >= 1 && data.reporterName.size() <= 80 &&
+             data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 400 &&
+             data.status in ['open', 'resolved', 'dismissed'] &&
+             data.adminNotes is string && data.adminNotes.size() <= 400 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // Trusted Admin Role Markers (read-only from client SDK)
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Published Apps & Links Catalog
+    match /catalog_items/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId) && (resource == null || existing().status == 'approved' || isAdmin());
+      allow list: if isSignedIn() && (resource.data.status == 'approved' || isAdmin());
+
+      allow create: if isSignedIn() &&
+                       isValidId(itemId) &&
+                       isValidCatalogItem(incoming()) &&
+                       incoming().uploaderUid == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'title', 'description', 'category', 'itemType', 'version',
+                         'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
+                         'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
+                         'downloadCount', 'averageRating', 'reviewCount', 'uploaderUid',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'title', 'description', 'category', 'itemType', 'version',
+                         'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
+                         'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
+                         'downloadCount', 'averageRating', 'reviewCount', 'uploaderUid',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time &&
+                       isAdmin();
+
+      allow update: if isSignedIn() &&
+                       isValidId(itemId) &&
+                       isValidCatalogItem(incoming()) &&
+                       incoming().uploaderUid == existing().uploaderUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time && (
+                         (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+                           'title', 'description', 'category', 'itemType', 'version',
+                           'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
+                           'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
+                           'downloadCount', 'averageRating', 'reviewCount', 'updatedAt'
+                         ])) ||
+                         (existing().status == 'approved' &&
+                          incoming().status == 'approved' &&
+                          incoming().downloadCount == existing().downloadCount + 1 &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['downloadCount', 'updatedAt'])) ||
+                         (existing().status == 'approved' &&
+                          incoming().status == 'approved' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['averageRating', 'reviewCount', 'updatedAt'])) ||
+                         (existing().status == 'approved' &&
+                          incoming().status == 'flagged' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(itemId) && isAdmin();
+    }
+
+    // Encrypted File Vault Blobs
+    match /encrypted_files/{fileId} {
+      allow get: if isSignedIn() && isValidId(fileId) && (resource == null || existing().status == 'approved' || isAdmin());
+      allow list: if isSignedIn() && (resource.data.status == 'approved' || isAdmin());
+
+      allow create: if isSignedIn() &&
+                       isValidId(fileId) &&
+                       isValidEncryptedFile(incoming()) &&
+                       incoming().uploaderUid == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'catalogItemId', 'fileName', 'mimeType', 'byteSize',
+                         'ciphertextBase64', 'ivBase64', 'sha256Checksum',
+                         'encryptionAlgorithm', 'status', 'uploaderUid',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'catalogItemId', 'fileName', 'mimeType', 'byteSize',
+                         'ciphertextBase64', 'ivBase64', 'sha256Checksum',
+                         'encryptionAlgorithm', 'status', 'uploaderUid',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time &&
+                       isAdmin();
+
+      allow update: if isSignedIn() &&
+                       isValidId(fileId) &&
+                       isValidEncryptedFile(incoming()) &&
+                       incoming().uploaderUid == existing().uploaderUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'catalogItemId', 'fileName', 'mimeType', 'byteSize',
+                         'ciphertextBase64', 'ivBase64', 'sha256Checksum',
+                         'encryptionAlgorithm', 'status', 'updatedAt'
+                       ]) &&
+                       isAdmin();
+
+      allow delete: if isSignedIn() && isValidId(fileId) && isAdmin();
+    }
+
+    // User Ratings & Reviews with Moderation
+    match /reviews/{reviewId} {
+      allow get: if isSignedIn() && isValidId(reviewId) && (
+        resource == null ||
+        existing().moderationStatus == 'visible' ||
+        existing().userId == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.moderationStatus == 'visible' ||
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isSignedIn() &&
+                       isValidId(reviewId) &&
+                       isValidReview(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().moderationStatus == 'visible' &&
+                       incoming().flagReason == '' &&
+                       incoming().keys().hasAll([
+                         'itemId', 'itemTitle', 'userId', 'authorName',
+                         'rating', 'comment', 'moderationStatus', 'flagReason',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'itemId', 'itemTitle', 'userId', 'authorName',
+                         'rating', 'comment', 'moderationStatus', 'flagReason',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time &&
+                       exists(/databases/$(database)/documents/catalog_items/$(incoming().itemId));
+
+      allow update: if isSignedIn() &&
+                       isValidId(reviewId) &&
+                       isValidReview(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().itemId == existing().itemId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time && (
+                         (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['moderationStatus', 'flagReason', 'updatedAt'])) ||
+                         (existing().userId == request.auth.uid &&
+                          existing().moderationStatus != 'hidden' &&
+                          incoming().moderationStatus == existing().moderationStatus &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'comment', 'authorName', 'updatedAt'])) ||
+                         (existing().moderationStatus == 'visible' &&
+                          incoming().moderationStatus == 'flagged' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['moderationStatus', 'flagReason', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(reviewId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    // Content Moderation Reports Queue
+    match /moderation_reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && (resource == null || existing().reporterUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.reporterUid == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       isValidReport(incoming()) &&
+                       incoming().reporterUid == request.auth.uid &&
+                       incoming().status == 'open' &&
+                       incoming().adminNotes == '' &&
+                       incoming().keys().hasAll([
+                         'targetType', 'targetId', 'targetTitle', 'reporterUid',
+                         'reporterName', 'reason', 'status', 'adminNotes',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'targetType', 'targetId', 'targetTitle', 'reporterUid',
+                         'reporterName', 'reason', 'status', 'adminNotes',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       isValidReport(incoming()) &&
+                       incoming().reporterUid == existing().reporterUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNotes', 'updatedAt']) &&
+                       isAdmin();
+
+      allow delete: if isSignedIn() && isValidId(reportId) && isAdmin();
+    }
+  }
+}

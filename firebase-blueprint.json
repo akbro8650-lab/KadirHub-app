@@ -1,0 +1,355 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Trusted administrator marker document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Verified administrator email."
+        },
+        "creatorHandle": {
+          "type": "string",
+          "description": "Creator TikTok handle (@kadirofficial007)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "CatalogItem": {
+      "title": "CatalogItem",
+      "description": "An app package or curated link published by the admin with AES-256-GCM encrypted target metadata.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Display title of the app or link."
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed description, changelog, or usage instructions."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["App", "Link", "Tool", "Game", "Resource"],
+          "description": "Catalog category."
+        },
+        "itemType": {
+          "type": "string",
+          "enum": ["link", "encrypted_file"],
+          "description": "Whether the item points to an encrypted external link or an encrypted vault file."
+        },
+        "version": {
+          "type": "string",
+          "description": "Version tag (e.g., 1.0.0)."
+        },
+        "fileSizeLabel": {
+          "type": "string",
+          "description": "Human-readable file size or link badge."
+        },
+        "creatorHandle": {
+          "type": "string",
+          "description": "Creator attribution handle (@kadirofficial007)."
+        },
+        "encryptedTargetUrl": {
+          "type": "string",
+          "description": "Base64 AES-256-GCM encrypted download URL or external link."
+        },
+        "urlIv": {
+          "type": "string",
+          "description": "Base64 12-byte GCM initialization vector for encryptedTargetUrl."
+        },
+        "encryptedFileId": {
+          "type": "string",
+          "description": "Document ID in /encrypted_files when itemType is encrypted_file, or empty string."
+        },
+        "sha256Checksum": {
+          "type": "string",
+          "description": "SHA-256 hex digest for payload integrity verification."
+        },
+        "encryptionAlgorithm": {
+          "type": "string",
+          "enum": ["AES-256-GCM"],
+          "description": "Cryptographic cipher identifier."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "flagged", "archived"],
+          "description": "Moderation visibility status."
+        },
+        "downloadCount": {
+          "type": "integer",
+          "description": "Total verified download or link open count."
+        },
+        "averageRating": {
+          "type": "number",
+          "description": "Aggregate user rating between 0.0 and 5.0."
+        },
+        "reviewCount": {
+          "type": "integer",
+          "description": "Total number of visible reviews."
+        },
+        "uploaderUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the admin who uploaded the item."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "category",
+        "itemType",
+        "version",
+        "fileSizeLabel",
+        "creatorHandle",
+        "encryptedTargetUrl",
+        "urlIv",
+        "encryptedFileId",
+        "sha256Checksum",
+        "encryptionAlgorithm",
+        "status",
+        "downloadCount",
+        "averageRating",
+        "reviewCount",
+        "uploaderUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedFile": {
+      "title": "EncryptedFile",
+      "description": "AES-256-GCM encrypted file payload stored securely in Firestore with SHA-256 integrity checksum.",
+      "type": "object",
+      "properties": {
+        "catalogItemId": {
+          "type": "string",
+          "description": "Parent catalog item document ID."
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original file name."
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "Original MIME type."
+        },
+        "byteSize": {
+          "type": "integer",
+          "description": "Plaintext byte length."
+        },
+        "ciphertextBase64": {
+          "type": "string",
+          "description": "Base64 AES-256-GCM encrypted file bytes."
+        },
+        "ivBase64": {
+          "type": "string",
+          "description": "Base64 12-byte GCM initialization vector."
+        },
+        "sha256Checksum": {
+          "type": "string",
+          "description": "64-character SHA-256 hex digest of original plaintext file."
+        },
+        "encryptionAlgorithm": {
+          "type": "string",
+          "enum": ["AES-256-GCM"],
+          "description": "Cipher used to encrypt the file."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "flagged", "archived"],
+          "description": "Moderation status matching parent catalog item."
+        },
+        "uploaderUid": {
+          "type": "string",
+          "description": "Admin UID who uploaded the encrypted file."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "catalogItemId",
+        "fileName",
+        "mimeType",
+        "byteSize",
+        "ciphertextBase64",
+        "ivBase64",
+        "sha256Checksum",
+        "encryptionAlgorithm",
+        "status",
+        "uploaderUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "User rating and review for a catalog item, subject to content moderation.",
+      "type": "object",
+      "properties": {
+        "itemId": {
+          "type": "string",
+          "description": "Target catalog item ID."
+        },
+        "itemTitle": {
+          "type": "string",
+          "description": "Denormalized title of the reviewed item for moderation queue visibility."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Author Firebase Auth UID."
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Reviewer display name."
+        },
+        "rating": {
+          "type": "integer",
+          "description": "Star rating from 1 to 5."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Review text."
+        },
+        "moderationStatus": {
+          "type": "string",
+          "enum": ["visible", "flagged", "hidden"],
+          "description": "Moderation state of the review."
+        },
+        "flagReason": {
+          "type": "string",
+          "description": "Optional reason provided when flagged or hidden."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "itemId",
+        "itemTitle",
+        "userId",
+        "authorName",
+        "rating",
+        "comment",
+        "moderationStatus",
+        "flagReason",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ModerationReport": {
+      "title": "ModerationReport",
+      "description": "User-submitted moderation report for a catalog item or review.",
+      "type": "object",
+      "properties": {
+        "targetType": {
+          "type": "string",
+          "enum": ["catalog_item", "review"],
+          "description": "Type of reported entity."
+        },
+        "targetId": {
+          "type": "string",
+          "description": "Document ID of the reported entity."
+        },
+        "targetTitle": {
+          "type": "string",
+          "description": "Summary label of the reported content."
+        },
+        "reporterUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the reporting user."
+        },
+        "reporterName": {
+          "type": "string",
+          "description": "Display name of the reporting user."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Explanation for the moderation report."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "resolved", "dismissed"],
+          "description": "Resolution status."
+        },
+        "adminNotes": {
+          "type": "string",
+          "description": "Moderator resolution notes."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "targetType",
+        "targetId",
+        "targetTitle",
+        "reporterUid",
+        "reporterName",
+        "reason",
+        "status",
+        "adminNotes",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Trusted administrator access records."
+    },
+    "/catalog_items/{itemId}": {
+      "schema": { "$ref": "#/entities/CatalogItem" },
+      "description": "Curated apps and links with AES-256-GCM encrypted targets."
+    },
+    "/encrypted_files/{fileId}": {
+      "schema": { "$ref": "#/entities/EncryptedFile" },
+      "description": "AES-256-GCM encrypted file storage blobs."
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "User ratings and reviews with moderation lifecycle."
+    },
+    "/moderation_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/ModerationReport" },
+      "description": "Content moderation reports queue."
+    }
+  }
+}

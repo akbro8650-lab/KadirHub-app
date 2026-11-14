@@ -1,0 +1,6 @@
+{
+  "name": "KadirHub",
+  "description": "Curated app and link directory by @kadirofficial007 with direct downloads, user reviews, ratings, encrypted file metadata storage, and an admin moderation dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
