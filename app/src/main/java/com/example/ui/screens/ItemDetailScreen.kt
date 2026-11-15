@@ -30,14 +30,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -91,24 +97,28 @@ import java.util.Locale
 fun ItemDetailScreen(
     item: CatalogItem,
     reviewsState: UiState<List<Review>>,
-    currentUserId: String,
-    isAdminUnlocked: Boolean,
+    currentUserId: String?,
+    isAdminAccess: Boolean,
+    isBookmarked: Boolean,
     isBusy: Boolean,
     transferProgress: Float?,
     pendingDownloadResult: DownloadActionResult?,
     decryptedLinkPreview: String,
     onBack: () -> Unit,
     onEditClick: (CatalogItem) -> Unit,
+    onToggleBookmark: (CatalogItem) -> Unit,
     onDownloadOrOpen: (CatalogItem) -> Unit,
     onClearPendingDownload: () -> Unit,
     onSubmitReview: (CatalogItem, Int, String) -> Unit,
     onFlagReview: (Review, String) -> Unit,
     onReportItem: (CatalogItem, String) -> Unit,
+    onRequireSignIn: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
 
     val context = LocalContext.current
+    val isSignedIn = !currentUserId.isNullOrBlank()
     var ratingInput by remember(item.id) { mutableIntStateOf(5) }
     var commentInput by remember(item.id) { mutableStateOf("") }
     var showReportDialog by remember { mutableStateOf(false) }
@@ -117,7 +127,7 @@ fun ItemDetailScreen(
     var flagReason by remember { mutableStateOf("") }
     var readyFile by remember { mutableStateOf<DecryptedVaultFile?>(null) }
 
-    val canEdit = item.uploaderUid == currentUserId || isAdminUnlocked
+    val canEdit = isSignedIn && (item.uploaderUid == currentUserId || isAdminAccess)
 
     val saveDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*")
@@ -192,6 +202,43 @@ fun ItemDetailScreen(
                 }
             },
             actions = {
+                IconButton(
+                    onClick = { onToggleBookmark(item) },
+                    modifier = Modifier.testTag("detail_bookmark_button")
+                ) {
+                    Icon(
+                        imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+                        contentDescription = if (isBookmarked) "Remove bookmark" else "Save bookmark",
+                        tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (!isSignedIn) {
+                            onRequireSignIn("Sign in with Google to share releases with others.")
+                        } else {
+                            val shareText = buildString {
+                                append("${item.title} (v${item.version}) on KadirHub\n")
+                                append(item.description.take(180))
+                                if (decryptedLinkPreview.isNotBlank()) {
+                                    append("\nMirror: $decryptedLinkPreview")
+                                }
+                            }
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "${item.title} - KadirHub")
+                                putExtra(Intent.EXTRA_TEXT, shareText)
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share ${item.title}"))
+                        }
+                    },
+                    modifier = Modifier.testTag("detail_share_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Share,
+                        contentDescription = "Share release"
+                    )
+                }
                 if (canEdit) {
                     IconButton(
                         onClick = { onEditClick(item) },
@@ -205,7 +252,13 @@ fun ItemDetailScreen(
                     }
                 }
                 IconButton(
-                    onClick = { showReportDialog = true },
+                    onClick = {
+                        if (!isSignedIn) {
+                            onRequireSignIn("Sign in with Google to submit a content report.")
+                        } else {
+                            showReportDialog = true
+                        }
+                    },
                     modifier = Modifier.testTag("report_item_button")
                 ) {
                     Icon(
@@ -256,11 +309,23 @@ fun ItemDetailScreen(
                                 )
                                 Spacer(modifier = Modifier.width(14.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = item.title,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = item.title,
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+                                        if (item.isFeatured) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Icon(
+                                                imageVector = Icons.Filled.AutoAwesome,
+                                                contentDescription = "Featured",
+                                                tint = MaterialTheme.colorScheme.tertiary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                     Spacer(modifier = Modifier.height(2.dp))
                                     val uploaderLabel = if (item.uploaderName.isNotBlank()) {
                                         "Uploaded by ${item.uploaderName}"
@@ -279,6 +344,33 @@ fun ItemDetailScreen(
                                 }
                             }
 
+                            if (item.moderationNote.isNotBlank() && (canEdit || isAdminAccess)) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Info,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Admin note: ${item.moderationNote}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    }
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(14.dp))
 
                             Text(
@@ -286,6 +378,38 @@ fun ItemDetailScreen(
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+
+                            if (item.whatsNew.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Filled.NewReleases,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "What's New in v${item.version}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = item.whatsNew,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(16.dp))
 
@@ -341,7 +465,7 @@ fun ItemDetailScreen(
                                     if (item.sha256Checksum.isNotBlank()) {
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = "SHA-256: ${item.sha256Checksum.take(24)}...",
+                                            text = "SHA-256: ${item.sha256Checksum.take(32)}...",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontFamily = FontFamily.Monospace,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -414,9 +538,13 @@ fun ItemDetailScreen(
                                 if (decryptedLinkPreview.isNotBlank()) {
                                     OutlinedButton(
                                         onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("KadirHub Link", decryptedLinkPreview))
-                                            Toast.makeText(context, "Decrypted link copied!", Toast.LENGTH_SHORT).show()
+                                            if (!isSignedIn) {
+                                                onRequireSignIn("Sign in with Google to copy decrypted mirror links.")
+                                            } else {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("KadirHub Link", decryptedLinkPreview))
+                                                Toast.makeText(context, "Decrypted link copied!", Toast.LENGTH_SHORT).show()
+                                            }
                                         },
                                         shape = RoundedCornerShape(14.dp),
                                         modifier = Modifier.height(50.dp)
@@ -447,61 +575,77 @@ fun ItemDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    (1..5).forEach { star ->
-                                        IconButton(
-                                            onClick = { ratingInput = star },
-                                            modifier = Modifier.testTag("star_rating_$star")
-                                        ) {
-                                            Icon(
-                                                imageVector = if (star <= ratingInput)
-                                                    Icons.Filled.Star
-                                                else
-                                                    Icons.Outlined.StarOutline,
-                                                contentDescription = "Rate $star stars",
-                                                tint = if (star <= ratingInput)
-                                                    MaterialTheme.colorScheme.tertiary
-                                                else
-                                                    MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(28.dp)
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                if (!isSignedIn) {
                                     Text(
-                                        text = "$ratingInput / 5",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.tertiary
+                                        text = "Sign in with Google to post ratings and reviews.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                }
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    OutlinedButton(
+                                        onClick = { onRequireSignIn("Sign in with Google to rate and review releases.") },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.testTag("detail_review_sign_in_button")
+                                    ) {
+                                        Text("Sign in to Review")
+                                    }
+                                } else {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        (1..5).forEach { star ->
+                                            IconButton(
+                                                onClick = { ratingInput = star },
+                                                modifier = Modifier.testTag("star_rating_$star")
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (star <= ratingInput)
+                                                        Icons.Filled.Star
+                                                    else
+                                                        Icons.Outlined.StarOutline,
+                                                    contentDescription = "Rate $star stars",
+                                                    tint = if (star <= ratingInput)
+                                                        MaterialTheme.colorScheme.tertiary
+                                                    else
+                                                        MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(28.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "$ratingInput / 5",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.tertiary
+                                        )
+                                    }
 
-                                OutlinedTextField(
-                                    value = commentInput,
-                                    onValueChange = { commentInput = it },
-                                    label = { Text("Share your feedback") },
-                                    minLines = 2,
-                                    maxLines = 4,
-                                    shape = RoundedCornerShape(14.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("review_comment_input")
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Button(
-                                    onClick = {
-                                        onSubmitReview(item, ratingInput, commentInput)
-                                        commentInput = ""
-                                    },
-                                    enabled = !isBusy && commentInput.isNotBlank(),
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier
-                                        .align(Alignment.End)
-                                        .testTag("submit_review_button")
-                                ) {
-                                    Text("Publish Review")
+                                    OutlinedTextField(
+                                        value = commentInput,
+                                        onValueChange = { commentInput = it },
+                                        label = { Text("Share your feedback") },
+                                        minLines = 2,
+                                        maxLines = 4,
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("review_comment_input")
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Button(
+                                        onClick = {
+                                            onSubmitReview(item, ratingInput, commentInput)
+                                            commentInput = ""
+                                        },
+                                        enabled = !isBusy && commentInput.isNotBlank(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .align(Alignment.End)
+                                            .testTag("submit_review_button")
+                                    ) {
+                                        Text("Publish Review")
+                                    }
                                 }
                             }
                         }
@@ -557,8 +701,14 @@ fun ItemDetailScreen(
                                 items(reviewsState.data, key = { it.id }) { review ->
                                     ReviewCard(
                                         review = review,
-                                        isOwnReview = review.userId == currentUserId,
-                                        onFlagClick = { flagTargetReview = review }
+                                        isOwnReview = isSignedIn && review.userId == currentUserId,
+                                        onFlagClick = {
+                                            if (!isSignedIn) {
+                                                onRequireSignIn("Sign in with Google to flag inappropriate reviews.")
+                                            } else {
+                                                flagTargetReview = review
+                                            }
+                                        }
                                     )
                                 }
                             }

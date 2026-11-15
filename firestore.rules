@@ -24,10 +24,11 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    // Admin role resolved exclusively from verified email claim or trusted /admins/{uid} doc
+    // Admin role resolved exclusively from verified kadir25.bd@gmail.com claim or trusted /admins/{uid} doc
     function isAdmin() {
       return isSignedIn() && (
         ('email' in request.auth.token &&
+         'email_verified' in request.auth.token &&
          request.auth.token.email == 'kadir25.bd@gmail.com' &&
          request.auth.token.email_verified == true) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
@@ -38,6 +39,7 @@ service cloud.firestore {
     function isValidCatalogItem(data) {
       return data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
              data.description is string && data.description.size() >= 1 && data.description.size() <= 2000 &&
+             (!('whatsNew' in data) || (data.whatsNew is string && data.whatsNew.size() <= 1000)) &&
              data.category in ['App', 'Link', 'Tool', 'Game', 'Resource'] &&
              data.itemType in ['link', 'encrypted_file'] &&
              data.version is string && data.version.size() >= 1 && data.version.size() <= 40 &&
@@ -49,6 +51,8 @@ service cloud.firestore {
              data.sha256Checksum is string && data.sha256Checksum.size() <= 128 &&
              data.encryptionAlgorithm == 'AES-256-GCM' &&
              data.status in ['pending', 'approved', 'flagged', 'archived'] &&
+             (!('isFeatured' in data) || data.isFeatured is bool) &&
+             (!('moderationNote' in data) || (data.moderationNote is string && data.moderationNote.size() <= 400)) &&
              data.downloadCount is int && data.downloadCount >= 0 &&
              data.averageRating is number && data.averageRating >= 0 && data.averageRating <= 5 &&
              data.reviewCount is int && data.reviewCount >= 0 &&
@@ -119,6 +123,22 @@ service cloud.firestore {
              data.updatedAt is timestamp;
     }
 
+    function isValidAnnouncement(data) {
+      return data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+             (!('actionUrl' in data) || (data.actionUrl is string && data.actionUrl.size() <= 512)) &&
+             data.active is bool &&
+             data.authorEmail is string && data.authorEmail.size() >= 3 && data.authorEmail.size() <= 120 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidBookmark(data, uid, itemId) {
+      return data.userId == uid &&
+             data.itemId == itemId &&
+             data.createdAt is timestamp;
+    }
+
     // --- Collection Rules ---
 
     // Trusted Admin Role Markers (read-only from client SDK)
@@ -129,20 +149,25 @@ service cloud.firestore {
     }
 
     // Published & Pending Apps/Links Catalog
+    // Public guests can browse ONLY 'approved' items; all interactions/writes require Google Sign-In
     match /catalog_items/{itemId} {
-      allow get: if isSignedIn() && isValidId(itemId) && (
-        resource == null ||
-        existing().status == 'approved' ||
-        existing().uploaderUid == request.auth.uid ||
-        isAdmin()
+      allow get: if isValidId(itemId) && (
+        (resource != null && existing().status == 'approved') ||
+        (isSignedIn() && (
+          resource == null ||
+          existing().uploaderUid == request.auth.uid ||
+          isAdmin()
+        ))
       );
-      allow list: if isSignedIn() && (
+      allow list: if (
         resource.data.status == 'approved' ||
-        resource.data.uploaderUid == request.auth.uid ||
-        isAdmin()
+        (isSignedIn() && (
+          resource.data.uploaderUid == request.auth.uid ||
+          isAdmin()
+        ))
       );
 
-      // Anyone signed in can upload, but non-admins MUST start in 'pending' status
+      // Anyone signed in can upload, but non-admins MUST start in 'pending' status and cannot self-feature
       allow create: if isSignedIn() &&
                        isValidId(itemId) &&
                        isValidCatalogItem(incoming()) &&
@@ -158,17 +183,20 @@ service cloud.firestore {
                          'uploaderName', 'iconBase64', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().keys().hasOnly([
-                         'title', 'description', 'category', 'itemType', 'version',
+                         'title', 'description', 'whatsNew', 'category', 'itemType', 'version',
                          'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
                          'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
+                         'isFeatured', 'moderationNote',
                          'downloadCount', 'averageRating', 'reviewCount', 'uploaderUid',
                          'uploaderName', 'iconBase64', 'createdAt', 'updatedAt'
                        ]) &&
                        incoming().createdAt <= request.time &&
                        incoming().updatedAt <= request.time &&
+                       (!('isFeatured' in incoming()) || !incoming().isFeatured || isAdmin()) &&
+                       (!('moderationNote' in incoming()) || incoming().moderationNote == '' || isAdmin()) &&
                        (
-                         (isAdmin() && incoming().status in ['approved', 'pending']) ||
-                         (!isAdmin() && incoming().status == 'pending')
+                         incoming().status == 'pending' ||
+                         (incoming().status == 'approved' && isAdmin())
                        );
 
       allow update: if isSignedIn() &&
@@ -177,23 +205,25 @@ service cloud.firestore {
                        incoming().uploaderUid == existing().uploaderUid &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().updatedAt <= request.time && (
-                         // Admin full edit / approval / moderation
+                         // Admin full edit / approval / featuring / moderation
                          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
-                           'title', 'description', 'category', 'itemType', 'version',
+                           'title', 'description', 'whatsNew', 'category', 'itemType', 'version',
                            'fileSizeLabel', 'creatorHandle', 'encryptedTargetUrl', 'urlIv',
                            'encryptedFileId', 'sha256Checksum', 'encryptionAlgorithm', 'status',
-                           'downloadCount', 'averageRating', 'reviewCount', 'uploaderName',
-                           'iconBase64', 'updatedAt'
+                           'isFeatured', 'moderationNote', 'downloadCount', 'averageRating',
+                           'reviewCount', 'uploaderName', 'iconBase64', 'updatedAt'
                          ])) ||
                          // Uploader can edit their own upload (resets to 'pending' for admin approval)
                          (existing().uploaderUid == request.auth.uid &&
                           existing().status in ['pending', 'approved', 'flagged'] &&
                           incoming().status == 'pending' &&
+                          (!('isFeatured' in incoming()) || incoming().isFeatured == false ||
+                            ('isFeatured' in existing() && incoming().isFeatured == existing().isFeatured)) &&
                           incoming().downloadCount == existing().downloadCount &&
                           incoming().averageRating == existing().averageRating &&
                           incoming().reviewCount == existing().reviewCount &&
                           incoming().diff(existing()).affectedKeys().hasOnly([
-                            'title', 'description', 'category', 'itemType', 'version',
+                            'title', 'description', 'whatsNew', 'category', 'itemType', 'version',
                             'fileSizeLabel', 'encryptedTargetUrl', 'urlIv', 'encryptedFileId',
                             'sha256Checksum', 'encryptionAlgorithm', 'uploaderName',
                             'iconBase64', 'status', 'updatedAt'
@@ -216,7 +246,7 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(itemId) && (existing().uploaderUid == request.auth.uid || isAdmin());
     }
 
-    // Encrypted File Vault Blobs & Chunked Manifests (up to 50 MB)
+    // Encrypted File Vault Blobs & Chunked Manifests (up to 50 MB) — requires sign-in to download/upload
     match /encrypted_files/{fileId} {
       allow get: if isSignedIn() && isValidId(fileId) && (
         resource == null ||
@@ -249,8 +279,8 @@ service cloud.firestore {
                        incoming().createdAt <= request.time &&
                        incoming().updatedAt <= request.time &&
                        (
-                         (isAdmin() && incoming().status in ['approved', 'pending']) ||
-                         (!isAdmin() && incoming().status == 'pending')
+                         incoming().status == 'pending' ||
+                         (incoming().status == 'approved' && isAdmin())
                        );
 
       allow update: if isSignedIn() &&
@@ -271,7 +301,7 @@ service cloud.firestore {
 
       allow delete: if isSignedIn() && isValidId(fileId) && (existing().uploaderUid == request.auth.uid || isAdmin());
 
-      // Encrypted Chunks Subcollection
+      // Encrypted Chunks Subcollection — requires sign-in
       match /chunks/{chunkId} {
         allow get: if isSignedIn() && isValidId(fileId) && isValidId(chunkId) && (
           resource == null ||
@@ -304,8 +334,8 @@ service cloud.firestore {
                          incoming().createdAt <= request.time &&
                          incoming().updatedAt <= request.time &&
                          (
-                           (isAdmin() && incoming().status in ['approved', 'pending']) ||
-                           (!isAdmin() && incoming().status == 'pending')
+                           incoming().status == 'pending' ||
+                           (incoming().status == 'approved' && isAdmin())
                          );
 
         allow update: if isSignedIn() &&
@@ -324,18 +354,22 @@ service cloud.firestore {
       }
     }
 
-    // User Ratings & Reviews with Moderation
+    // User Ratings & Reviews: guests can view 'visible' reviews; sign-in required to write/edit/flag
     match /reviews/{reviewId} {
-      allow get: if isSignedIn() && isValidId(reviewId) && (
-        resource == null ||
-        existing().moderationStatus == 'visible' ||
-        existing().userId == request.auth.uid ||
-        isAdmin()
+      allow get: if isValidId(reviewId) && (
+        (resource != null && existing().moderationStatus == 'visible') ||
+        (isSignedIn() && (
+          resource == null ||
+          existing().userId == request.auth.uid ||
+          isAdmin()
+        ))
       );
-      allow list: if isSignedIn() && (
+      allow list: if (
         resource.data.moderationStatus == 'visible' ||
-        resource.data.userId == request.auth.uid ||
-        isAdmin()
+        (isSignedIn() && (
+          resource.data.userId == request.auth.uid ||
+          isAdmin()
+        ))
       );
 
       allow create: if isSignedIn() &&
@@ -378,7 +412,7 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(reviewId) && (existing().userId == request.auth.uid || isAdmin());
     }
 
-    // Content Moderation Reports Queue
+    // Content Moderation Reports Queue (signed-in only)
     match /moderation_reports/{reportId} {
       allow get: if isSignedIn() && isValidId(reportId) && (resource == null || existing().reporterUid == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.reporterUid == request.auth.uid || isAdmin());
@@ -412,6 +446,48 @@ service cloud.firestore {
                        isAdmin();
 
       allow delete: if isSignedIn() && isValidId(reportId) && isAdmin();
+    }
+
+    // Admin Broadcast Announcements (publicly readable when active; admin-only write)
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && ((resource != null && existing().active == true) || isAdmin());
+      allow list: if resource.data.active == true || isAdmin();
+
+      allow create: if isAdmin() &&
+                       isValidId(announcementId) &&
+                       isValidAnnouncement(incoming()) &&
+                       incoming().keys().hasAll([
+                         'title', 'message', 'active', 'authorEmail', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'title', 'message', 'actionUrl', 'active', 'authorEmail', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time;
+
+      allow update: if isAdmin() &&
+                       isValidId(announcementId) &&
+                       isValidAnnouncement(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['title', 'message', 'actionUrl', 'active', 'updatedAt']);
+
+      allow delete: if isAdmin() && isValidId(announcementId);
+    }
+
+    // User Saved Bookmarks (strictly per-user owner isolated)
+    match /users/{userId}/bookmarks/{itemId} {
+      allow get, list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidId(itemId) &&
+                       request.auth.uid == userId &&
+                       isValidBookmark(incoming(), userId, itemId) &&
+                       incoming().keys().hasAll(['userId', 'itemId', 'createdAt']) &&
+                       incoming().keys().hasOnly(['userId', 'itemId', 'createdAt']) &&
+                       incoming().createdAt <= request.time;
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(userId) && isValidId(itemId) && request.auth.uid == userId;
     }
   }
 }

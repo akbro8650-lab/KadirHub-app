@@ -3,6 +3,7 @@ package com.example.data.model
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentId
 import com.google.firebase.firestore.IgnoreExtraProperties
+import com.google.firebase.firestore.PropertyName
 import com.google.firebase.firestore.ServerTimestamp
 
 @IgnoreExtraProperties
@@ -10,6 +11,7 @@ data class CatalogItem(
     @DocumentId val id: String = "",
     val title: String = "",
     val description: String = "",
+    val whatsNew: String = "",
     val category: String = "App",
     val itemType: String = "link",
     val version: String = "1.0.0",
@@ -21,6 +23,10 @@ data class CatalogItem(
     val sha256Checksum: String = "",
     val encryptionAlgorithm: String = "AES-256-GCM",
     val status: String = "pending",
+    @field:PropertyName("isFeatured")
+    @get:PropertyName("isFeatured")
+    val isFeatured: Boolean = false,
+    val moderationNote: String = "",
     val downloadCount: Long = 0L,
     val averageRating: Double = 0.0,
     val reviewCount: Long = 0L,
@@ -92,6 +98,26 @@ data class ModerationReport(
     val adminNotes: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
+data class Announcement(
+    @DocumentId val id: String = "",
+    val title: String = "",
+    val message: String = "",
+    val actionUrl: String = "",
+    val active: Boolean = true,
+    val authorEmail: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
+data class BookmarkItem(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val itemId: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null
 )
 
 object CatalogConstants {

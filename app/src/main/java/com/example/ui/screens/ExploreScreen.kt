@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,7 +26,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.FolderZip
@@ -34,6 +38,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -61,22 +67,34 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.model.Announcement
 import com.example.data.model.CatalogConstants
 import com.example.data.model.CatalogItem
+import com.example.ui.components.AnnouncementBannerCard
 import com.example.ui.components.CatalogItemIcon
+import com.example.ui.components.FeaturedSpotlightCarousel
 import com.example.ui.viewmodel.SortOption
+import com.example.ui.viewmodel.TypeFilter
 import com.example.ui.viewmodel.UiState
 import java.util.Locale
 
 @Composable
 fun ExploreScreen(
     catalogState: UiState<List<CatalogItem>>,
+    announcements: List<Announcement>,
+    featuredItems: List<CatalogItem>,
+    bookmarkedIds: Set<String>,
+    isSignedIn: Boolean,
     searchQuery: String,
     selectedCategory: String,
+    selectedTypeFilter: TypeFilter,
     sortOption: SortOption,
     onSearchChange: (String) -> Unit,
     onSelectCategory: (String) -> Unit,
+    onSelectTypeFilter: (TypeFilter) -> Unit,
     onSelectSort: (SortOption) -> Unit,
+    onToggleBookmark: (CatalogItem) -> Unit,
+    onRequestSignIn: (String) -> Unit,
     onItemClick: (CatalogItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -103,6 +121,90 @@ fun ExploreScreen(
                 )
             }
 
+            if (!isSignedIn) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                                RoundedCornerShape(18.dp)
+                            )
+                            .testTag("guest_browse_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Browsing in Guest Mode",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "View apps and reviews freely. Sign in with Google to download, save, rate, or upload.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    onRequestSignIn("Sign in with Google to download APKs, bookmark items, rate releases, or upload.")
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("guest_banner_sign_in_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Login,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Sign In")
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (announcements.isNotEmpty()) {
+                items(announcements.take(2), key = { "ann_${it.id}" }) { announcement ->
+                    AnnouncementBannerCard(
+                        announcement = announcement,
+                        onActionClick = { url ->
+                            if (!isSignedIn) {
+                                onRequestSignIn("Sign in with Google to open announcement links.")
+                            } else {
+                                val normalized = if (url.startsWith("http://") || url.startsWith("https://")) {
+                                    url
+                                } else {
+                                    "https://$url"
+                                }
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(normalized)))
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+
+            if (featuredItems.isNotEmpty() && searchQuery.isBlank() && selectedCategory == "All" && selectedTypeFilter == TypeFilter.ALL) {
+                item {
+                    FeaturedSpotlightCarousel(
+                        featuredItems = featuredItems,
+                        onItemClick = onItemClick
+                    )
+                }
+            }
+
             item {
                 OutlinedTextField(
                     value = searchQuery,
@@ -115,7 +217,7 @@ fun ExploreScreen(
                         )
                     },
                     trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
+                        AnimatedVisibility(visible = searchQuery.isNotEmpty()) {
                             IconButton(onClick = { onSearchChange("") }) {
                                 Icon(
                                     imageVector = Icons.Filled.Close,
@@ -137,49 +239,74 @@ fun ExploreScreen(
             }
 
             item {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(CatalogConstants.CATEGORIES) { category ->
-                        val selected = selectedCategory == category
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onSelectCategory(category) },
-                            label = { Text(category) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            ),
-                            modifier = Modifier.testTag("category_chip_${category.lowercase()}")
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(CatalogConstants.CATEGORIES) { category ->
+                            val selected = selectedCategory == category
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectCategory(category) },
+                                label = { Text(category) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("category_chip_${category.lowercase()}")
+                            )
+                        }
                     }
-                }
-            }
 
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Sort:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    SortOption.entries.forEach { option ->
-                        val selected = sortOption == option
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onSelectSort(option) },
-                            label = {
-                                Text(
-                                    text = option.label,
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            }
-                        )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(TypeFilter.entries) { filter ->
+                            val selected = selectedTypeFilter == filter
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectTypeFilter(filter) },
+                                label = {
+                                    Text(
+                                        text = if (filter == TypeFilter.SAVED && bookmarkedIds.isNotEmpty()) {
+                                            "Saved (${bookmarkedIds.size})"
+                                        } else {
+                                            filter.label
+                                        },
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                ),
+                                modifier = Modifier.testTag("type_chip_${filter.name.lowercase()}")
+                            )
+                        }
+                        item {
+                            Text(
+                                text = "•",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 2.dp)
+                            )
+                        }
+                        items(SortOption.entries) { option ->
+                            val selected = sortOption == option
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectSort(option) },
+                                label = {
+                                    Text(
+                                        text = option.label,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                },
+                                modifier = Modifier.testTag("sort_chip_${option.name.lowercase()}")
+                            )
+                        }
                     }
                 }
             }
@@ -217,12 +344,18 @@ fun ExploreScreen(
                 is UiState.Success -> {
                     if (catalogState.data.isEmpty()) {
                         item {
-                            EmptyCatalogCard(isFiltered = searchQuery.isNotBlank() || selectedCategory != "All")
+                            EmptyCatalogCard(
+                                isFiltered = searchQuery.isNotBlank() ||
+                                    selectedCategory != "All" ||
+                                    selectedTypeFilter != TypeFilter.ALL
+                            )
                         }
                     } else {
                         items(catalogState.data, key = { it.id }) { item ->
                             CatalogItemCard(
                                 item = item,
+                                isBookmarked = bookmarkedIds.contains(item.id),
+                                onToggleBookmark = { onToggleBookmark(item) },
                                 onClick = { onItemClick(item) }
                             )
                         }
@@ -347,7 +480,7 @@ private fun CreatorHeroCard(
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "$itemCount approved releases ready for encrypted download",
+                    text = "$itemCount verified releases • encrypted vault & community ratings",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -359,6 +492,8 @@ private fun CreatorHeroCard(
 @Composable
 private fun CatalogItemCard(
     item: CatalogItem,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
     onClick: () -> Unit
 ) {
     Card(
@@ -372,12 +507,15 @@ private fun CatalogItemCard(
             .fillMaxWidth()
             .border(
                 1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+                if (item.isFeatured)
+                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f)
+                else
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
                 RoundedCornerShape(18.dp)
             )
             .testTag("catalog_item_card_${item.id}")
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
@@ -392,13 +530,25 @@ private fun CatalogItemCard(
                 Spacer(modifier = Modifier.width(12.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = item.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = item.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (item.isFeatured) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Filled.AutoAwesome,
+                                contentDescription = "Featured",
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(2.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -451,22 +601,36 @@ private fun CatalogItemCard(
                         )
                     }
                 }
+
+                IconButton(
+                    onClick = onToggleBookmark,
+                    modifier = Modifier.testTag("bookmark_button_${item.id}")
+                ) {
+                    Icon(
+                        imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+                        contentDescription = if (isBookmarked) "Remove bookmark" else "Save bookmark",
+                        tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Text(
                 text = item.description,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 8.dp)
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(end = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -557,7 +721,7 @@ private fun EmptyCatalogCard(isFiltered: Boolean) {
                 text = if (isFiltered) {
                     "Try clearing your search or switching category filters."
                 } else {
-                    "Upload an APK or link from the Upload tab — admin ${CatalogConstants.CREATOR_TIKTOK_HANDLE} approves releases for everyone."
+                    "Sign in and upload an APK or link from the Upload tab — admin approves releases for everyone."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

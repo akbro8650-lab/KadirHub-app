@@ -20,8 +20,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.EnhancedEncryption
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.GppGood
@@ -31,29 +34,53 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.model.CatalogConstants
+import com.example.ui.components.formatFileSize
+import java.io.File
+
+enum class ThemeMode(val label: String) {
+    SYSTEM("System"),
+    DARK("Dark"),
+    LIGHT("Light")
+}
 
 @Composable
 fun VaultInfoScreen(
+    isSignedIn: Boolean,
     userEmail: String?,
     userDisplayName: String?,
-    isServerAdmin: Boolean,
+    isAdminAccess: Boolean,
+    myUploadsCount: Int,
+    bookmarksCount: Int,
+    themeMode: ThemeMode,
+    onSelectThemeMode: (ThemeMode) -> Unit,
+    onCacheCleared: (String) -> Unit,
+    onRequestSignIn: (String) -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    var cacheBytes by remember {
+        mutableLongStateOf(computeVaultCacheSize(context.cacheDir))
+    }
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -144,6 +171,85 @@ fun VaultInfoScreen(
                 ) {
                     Column(
                         modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.DarkMode,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Appearance & Vault Storage",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ThemeMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = themeMode == mode,
+                                    onClick = { onSelectThemeMode(mode) },
+                                    label = { Text(mode.label) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("theme_chip_${mode.name.lowercase()}")
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Decrypted Temp Cache",
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Text(
+                                    text = if (cacheBytes > 0L) "${formatFileSize(cacheBytes)} stored locally" else "Cache is clean (0 B)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val cleared = clearVaultCache(context.cacheDir)
+                                    cacheBytes = computeVaultCacheSize(context.cacheDir)
+                                    onCacheCleared(
+                                        if (cleared > 0L) "Cleared ${formatFileSize(cleared)} of decrypted vault temp files."
+                                        else "Vault temp cache is already empty."
+                                    )
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("clear_vault_cache_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.CleaningServices,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Clear")
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Text(
@@ -163,7 +269,7 @@ fun VaultInfoScreen(
                         SecuritySpecRow(
                             icon = Icons.Filled.GppGood,
                             title = "Admin Approval & Zero-Trust Moderation",
-                            subtitle = "Community APK uploads (up to 50 MB) and links stay encrypted in a pending queue until approved by the admin, and uploaders can edit their own submissions for re-approval."
+                            subtitle = "Community APK uploads (up to 50 MB) and links stay encrypted in a pending queue until approved by ${CatalogConstants.ADMIN_EMAIL}."
                         )
                     }
                 }
@@ -179,55 +285,120 @@ fun VaultInfoScreen(
                         modifier = Modifier.padding(18.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Filled.Person,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = userDisplayName ?: "Signed-in Member",
-                                    style = MaterialTheme.typography.titleSmall
+                        if (!isSignedIn) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Filled.Person,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
-                                Text(
-                                    text = userEmail ?: "Google Account",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Guest Mode",
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Text(
+                                        text = "Sign in with Google to unlock downloads, uploads, bookmarks, and reviews.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
-                        }
+                            Button(
+                                onClick = {
+                                    onRequestSignIn("Sign in with Google to interact, bookmark, review, or upload releases.")
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("vault_sign_in_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Login,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Sign in with Google", fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Filled.Person,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = userDisplayName ?: "Signed-in Member",
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Text(
+                                        text = userEmail ?: "Google Account",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    shape = CircleShape
+                                ) {
+                                    Text(
+                                        text = if (isAdminAccess) "Admin" else "Member",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
 
-                        Text(
-                            text = if (isServerAdmin) "Role: Verified Server Admin" else "Role: Community Member",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (isServerAdmin) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        OutlinedButton(
-                            onClick = onSignOut,
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("sign_out_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Logout,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                            Text(
+                                text = "My Uploads: $myUploadsCount • Saved Bookmarks: $bookmarksCount",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Sign Out")
+
+                            OutlinedButton(
+                                onClick = onSignOut,
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("sign_out_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Logout,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Sign Out")
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+private fun computeVaultCacheSize(cacheDir: File): Long {
+    val dir = File(cacheDir, "vault_downloads")
+    if (!dir.exists() || !dir.isDirectory) return 0L
+    return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+}
+
+private fun clearVaultCache(cacheDir: File): Long {
+    val before = computeVaultCacheSize(cacheDir)
+    val dir = File(cacheDir, "vault_downloads")
+    if (dir.exists()) {
+        dir.deleteRecursively()
+    }
+    return before
 }
 
 @Composable

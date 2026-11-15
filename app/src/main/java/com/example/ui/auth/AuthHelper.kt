@@ -188,6 +188,114 @@ fun signOut(
 }
 
 @Composable
+fun SignInPromptDialog(
+    reason: String,
+    onDismiss: () -> Unit,
+    onAuthSuccess: () -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val credentialManager = remember { CredentialManager.create(context) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!isLoading) onDismiss() },
+        icon = {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = CircleShape,
+                modifier = Modifier.size(52.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+        },
+        title = {
+            Text(
+                text = stringResource(R.string.sign_in_required_title),
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (errorMessage != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = errorMessage!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    errorMessage = null
+                    isLoading = true
+                    onGoogleSignInClicked(
+                        context = context,
+                        credentialManager = credentialManager,
+                        onAuthSuccess = {
+                            isLoading = false
+                            onAuthSuccess()
+                        },
+                        onAuthError = { msg ->
+                            isLoading = false
+                            errorMessage = msg
+                        },
+                        scope = coroutineScope,
+                        onAuthCancelled = {
+                            isLoading = false
+                        }
+                    )
+                },
+                enabled = !isLoading,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("dialog_google_sign_in_button")
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text(stringResource(R.string.sign_in_google_cta), fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(
+                onClick = onDismiss,
+                enabled = !isLoading,
+                modifier = Modifier.testTag("dialog_sign_in_cancel_button")
+            ) {
+                Text("Keep Browsing")
+            }
+        }
+    )
+}
+
+@Composable
 fun AuthScreen(
     onAuthSuccess: () -> Unit
 ) {

@@ -18,7 +18,7 @@ import java.util.UUID
 class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
 
     @Test
-    fun adminPublishEncryptedFileAndLink_regularUserDownloadsAndDecrypts() = runBlocking {
+    fun adminPublishEncryptedFileAndLink_regularUserDownloadsAndDecrypts(): Unit = runBlocking {
         val adminUid = signInTestUser(ADMIN_EMAIL)
         seedEmulatorAdminDoc(adminUid, ADMIN_EMAIL)
         val adminRepo = CatalogRepository(firestore, auth)
@@ -30,6 +30,7 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
             adminRepo.publishCatalogItem(
                 title = "Kadir Cleaner Pro",
                 description = "Verified utility tool uploaded by @kadirofficial007",
+                whatsNew = "v3.0.1 performance improvements",
                 category = "App",
                 version = "3.0.1",
                 targetUrl = secretUrl,
@@ -40,7 +41,8 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
                     mimeType = "application/vnd.android.package-archive",
                     bytes = samplePayload
                 ),
-                publishAsApproved = true
+                publishAsApproved = true,
+                isFeatured = true
             ).getOrThrow()
         }
 
@@ -52,6 +54,8 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
         }
         val item = approvedItems.first { it.id == itemId }
         assertEquals("iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", item.iconBase64)
+        assertEquals("v3.0.1 performance improvements", item.whatsNew)
+        assertTrue(item.isFeatured)
 
         val decryptedUrl = CryptoVaultManager.decryptString(item.encryptedTargetUrl, item.urlIv)
         assertEquals(secretUrl, decryptedUrl)
@@ -79,6 +83,16 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
             aliceRepo.observeReviewsForItem(itemId).first { it.isNotEmpty() }
         }
         assertEquals(5L, reviews.first().rating)
+
+        // Alice can toggle bookmark for her own user only
+        val bookmarked = withTimeout(DEFAULT_TIMEOUT_MS) {
+            aliceRepo.toggleBookmark(itemId, currentlyBookmarked = false).getOrThrow()
+        }
+        assertTrue(bookmarked)
+        val bookmarkedSet = withTimeout(FLOW_TIMEOUT_MS) {
+            aliceRepo.observeBookmarkedIds().first { it.contains(itemId) }
+        }
+        assertTrue(bookmarkedSet.contains(itemId))
     }
 
     @Test
@@ -94,6 +108,7 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
             aliceRepo.publishCatalogItem(
                 title = "Community Mod Apk ${UUID.randomUUID().toString().take(6)}",
                 description = "Uploaded by regular user with custom icon, pending approval",
+                whatsNew = "First public beta",
                 category = "App",
                 version = "1.2.0",
                 targetUrl = "",
@@ -125,16 +140,12 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
         }
         assertFalse(bobApproved.any { it.id == itemId })
 
-        // Admin approves the pending item & all encrypted chunks
+        // Admin bulk-approves pending item & all encrypted chunks
         val adminUid = signInTestUser(ADMIN_EMAIL)
         seedEmulatorAdminDoc(adminUid, ADMIN_EMAIL)
         val adminRepo = CatalogRepository(firestore, auth)
         withTimeout(DEFAULT_TIMEOUT_MS) {
-            adminRepo.adminModerateCatalogItem(
-                itemId = itemId,
-                newStatus = "approved",
-                encryptedFileId = pendingItem.encryptedFileId
-            ).getOrThrow()
+            adminRepo.adminApproveAllPending(listOf(pendingItem)).getOrThrow()
         }
 
         // Now Bob sees it and downloads & verifies the streamed chunked APK
@@ -155,6 +166,7 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertEquals(apkBytes.size.toLong(), downloadedFile.byteSize)
         assertArrayEquals(apkBytes, tempDownloadFile.readBytes())
         tempDownloadFile.delete()
+        Unit
     }
 
     @Test
@@ -214,6 +226,7 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
                 existingItem = approvedItem,
                 title = "Alice Tool v2",
                 description = "Updated release with APK & new icon",
+                whatsNew = "Fixed crash",
                 category = "Tool",
                 version = "2.0.0",
                 targetUrl = "",
@@ -237,10 +250,11 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertEquals("pending", aliceEdited.status)
         assertEquals("aWNvbjI=", aliceEdited.iconBase64)
         assertEquals("2.0.0", aliceEdited.version)
+        assertEquals("Fixed crash", aliceEdited.whatsNew)
     }
 
     @Test
-    fun regularUser_cannotSelfApproveDirectly() = runBlocking {
+    fun regularUser_cannotSelfApproveOrPublishAnnouncements(): Unit = runBlocking {
         signInTestUser(BOB_EMAIL)
         val itemRef = firestore.collection("catalog_items").document("self_approve_${UUID.randomUUID()}")
         val badMap = mapOf(
@@ -280,43 +294,99 @@ class CatalogRepositoryRuleTest : FirestoreEmulatorTestBase() {
             ex = e.unwrapFirestoreException()
         }
         assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, ex?.code)
-    }
 
-    @Test
-    fun unauthenticatedUser_observeApprovedCatalog_failsBeforeQueryOrPermissionDenied() = runBlocking {
-        auth.signOut()
-        val repo = CatalogRepository(firestore, auth)
-        var failed = false
-        try {
-            withTimeout(FLOW_TIMEOUT_MS) {
-                repo.observeApprovedCatalog().first()
-            }
-        } catch (_: Exception) {
-            failed = true
+        // Regular user also cannot publish an announcement
+        val bobRepo = CatalogRepository(firestore, auth)
+        val annResult = withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.publishAnnouncement("Unauthorized", "Should fail")
         }
-        assertTrue(failed)
+        assertTrue(annResult.isFailure)
+        assertEquals(
+            FirebaseFirestoreException.Code.PERMISSION_DENIED,
+            annResult.exceptionOrNull()?.unwrapFirestoreException()?.code
+        )
     }
 
     @Test
-    fun unauthenticatedDirectFirestoreQuery_failsWithPermissionDenied() = runBlocking {
+    fun guestUser_canViewApprovedCatalog_butCannotDownloadDecryptOrWriteOrListUnfiltered(): Unit = runBlocking {
+        // Seed one approved item and one announcement as admin
+        val adminUid = signInTestUser(ADMIN_EMAIL)
+        seedEmulatorAdminDoc(adminUid, ADMIN_EMAIL)
+        val adminRepo = CatalogRepository(firestore, auth)
+        val approvedId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.publishCatalogItem(
+                title = "Public Viewable App",
+                description = "Visible to guests for preview",
+                category = "App",
+                version = "1.0.0",
+                targetUrl = "https://example.com/public",
+                fileSizeLabel = "1 MB",
+                fileSource = UploadFileSource.InMemory(
+                    fileName = "public.apk",
+                    mimeType = "application/vnd.android.package-archive",
+                    bytes = "apk_payload".toByteArray(StandardCharsets.UTF_8)
+                ),
+                publishAsApproved = true
+            ).getOrThrow()
+        }
+        val approvedItem = withTimeout(FLOW_TIMEOUT_MS) {
+            adminRepo.observeApprovedCatalog().first { list -> list.any { it.id == approvedId } }
+        }.first { it.id == approvedId }
+
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.publishAnnouncement("Notice", "Welcome guests!").getOrThrow()
+        }
+
+        // Sign out -> Guest mode
         auth.signOut()
-        var ex: FirebaseFirestoreException? = null
+        val guestRepo = CatalogRepository(firestore, auth)
+
+        // Guest CAN view approved catalog & active announcements
+        val guestItems = withTimeout(FLOW_TIMEOUT_MS) {
+            guestRepo.observeApprovedCatalog().first { list -> list.any { it.id == approvedId } }
+        }
+        assertTrue(guestItems.any { it.id == approvedId })
+        val guestNotices = withTimeout(FLOW_TIMEOUT_MS) {
+            guestRepo.observeActiveAnnouncements().first { it.isNotEmpty() }
+        }
+        assertTrue(guestNotices.isNotEmpty())
+
+        // Guest CANNOT download encrypted files, record download, toggle bookmarks, or query unfiltered collection
+        val downloadAttempt = guestRepo.downloadAndDecryptFile(approvedItem.encryptedFileId)
+        assertTrue(downloadAttempt.isFailure)
+
+        val bookmarkAttempt = guestRepo.toggleBookmark(approvedId, false)
+        assertTrue(bookmarkAttempt.isFailure)
+
+        var unfilteredEx: FirebaseFirestoreException? = null
         try {
             withTimeout(FLOW_TIMEOUT_MS) {
-                firestore.collection("catalog_items")
-                    .whereEqualTo("status", "approved")
-                    .get()
-                    .let { task ->
-                        val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
-                        task.addOnSuccessListener { latch.complete(Unit) }
-                        task.addOnFailureListener { e -> latch.completeExceptionally(e) }
-                        latch.await()
-                    }
+                firestore.collection("catalog_items").get().let { task ->
+                    val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                    task.addOnSuccessListener { latch.complete(Unit) }
+                    task.addOnFailureListener { e -> latch.completeExceptionally(e) }
+                    latch.await()
+                }
             }
         } catch (e: Exception) {
-            ex = e.unwrapFirestoreException()
+            unfilteredEx = e.unwrapFirestoreException()
         }
-        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, ex?.code)
+        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, unfilteredEx?.code)
+
+        var fileGetEx: FirebaseFirestoreException? = null
+        try {
+            withTimeout(FLOW_TIMEOUT_MS) {
+                firestore.collection("encrypted_files").document(approvedItem.encryptedFileId).get().let { task ->
+                    val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                    task.addOnSuccessListener { latch.complete(Unit) }
+                    task.addOnFailureListener { e -> latch.completeExceptionally(e) }
+                    latch.await()
+                }
+            }
+        } catch (e: Exception) {
+            fileGetEx = e.unwrapFirestoreException()
+        }
+        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fileGetEx?.code)
     }
 
     private companion object {

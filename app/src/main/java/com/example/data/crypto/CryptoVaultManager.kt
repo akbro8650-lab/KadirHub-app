@@ -21,20 +21,12 @@ object CryptoVaultManager {
     private const val GCM_IV_LENGTH_BYTES = 12
     private const val VAULT_KEY_SEED = "KadirHub::@kadirofficial007::AES256GCM::VaultKey::v1"
 
-    // SHA-256("kadir@25")
-    private const val ADMIN_ACCESS_HASH =
-        "2572119a627c9e9edbaa54c4199f024a0b9a9ecf6e14cf282b57c5bb3893ded7"
-
     private val secureRandom = SecureRandom()
 
     private fun deriveVaultKey(): SecretKeySpec {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(VAULT_KEY_SEED.toByteArray(StandardCharsets.UTF_8))
         return SecretKeySpec(digest, "AES")
-    }
-
-    fun verifyAdminPassword(candidate: String): Boolean {
-        return sha256Hex(candidate.trim().toByteArray(StandardCharsets.UTF_8)) == ADMIN_ACCESS_HASH
     }
 
     fun sha256Hex(bytes: ByteArray): String {

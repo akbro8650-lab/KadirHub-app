@@ -14,13 +14,6 @@ import org.robolectric.annotation.Config
 class CryptoVaultManagerTest {
 
     @Test
-    fun adminPasswordVerification_acceptsExactPasswordAndRejectsInvalid() {
-        assertTrue(CryptoVaultManager.verifyAdminPassword("kadir@25"))
-        assertFalse(CryptoVaultManager.verifyAdminPassword("kadir@26"))
-        assertFalse(CryptoVaultManager.verifyAdminPassword(""))
-    }
-
-    @Test
     fun encryptAndDecryptString_roundTripsWithSha256Integrity() {
         val url = "https://example.com/releases/kadirhub-v2.apk"
         val payload = CryptoVaultManager.encryptString(url)

@@ -1,6 +1,8 @@
 package com.example.data.repository
 
 import com.example.data.crypto.CryptoVaultManager
+import com.example.data.model.Announcement
+import com.example.data.model.BookmarkItem
 import com.example.data.model.CatalogConstants
 import com.example.data.model.CatalogItem
 import com.example.data.model.EncryptedFile
@@ -99,7 +101,6 @@ class CatalogRepository(
     }
 
     fun observeApprovedCatalog(): Flow<List<CatalogItem>> = flow {
-        val uid = requireUserId()
         val path = "catalog_items"
         emitAll(
             db.collection(path)
@@ -109,7 +110,85 @@ class CatalogRepository(
                     snapshot.toObjects(
                         CatalogItem::class.java,
                         DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedWith(
+                        compareByDescending<CatalogItem> { it.isFeatured }
+                            .thenByDescending { it.createdAt?.seconds ?: 0L }
+                    )
+                }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exToLog = firestoreError ?: (error as? Exception)
+                    if (exToLog != null) {
+                        handleFirestoreError(exToLog, OperationType.LIST, path, auth)
+                    }
+                    throw error
+                }
+        )
+    }
+
+    fun observeActiveAnnouncements(): Flow<List<Announcement>> = flow {
+        val path = "announcements"
+        emitAll(
+            db.collection(path)
+                .whereEqualTo("active", true)
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        Announcement::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                     ).sortedByDescending { it.createdAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exToLog = firestoreError ?: (error as? Exception)
+                    if (exToLog != null) {
+                        handleFirestoreError(exToLog, OperationType.LIST, path, auth)
+                    }
+                    throw error
+                }
+        )
+    }
+
+    fun observeAllAnnouncementsForAdmin(): Flow<List<Announcement>> = flow {
+        val uid = requireUserId()
+        val path = "announcements"
+        emitAll(
+            db.collection(path)
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        Announcement::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.createdAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exToLog = firestoreError ?: (error as? Exception)
+                    if (exToLog != null && auth.currentUser?.uid == uid) {
+                        handleFirestoreError(exToLog, OperationType.LIST, path, auth)
+                    }
+                    throw error
+                }
+        )
+    }
+
+    fun observeBookmarkedIds(): Flow<Set<String>> = flow {
+        val uid = requireUserId()
+        val path = "users/$uid/bookmarks"
+        emitAll(
+            db.collection("users").document(uid).collection("bookmarks")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(BookmarkItem::class.java).map { it.itemId.ifBlank { it.id } }.toSet()
                 }
                 .catch { error ->
                     val firestoreError = generateSequence(error) { it.cause }
@@ -179,7 +258,6 @@ class CatalogRepository(
     }
 
     fun observeReviewsForItem(itemId: String): Flow<List<Review>> = flow {
-        val uid = requireUserId()
         val path = "reviews"
         emitAll(
             db.collection(path)
@@ -198,7 +276,7 @@ class CatalogRepository(
                         .firstOrNull()
                     if (firestoreError == null && error is CancellationException) throw error
                     val exToLog = firestoreError ?: (error as? Exception)
-                    if (exToLog != null && auth.currentUser?.uid == uid) {
+                    if (exToLog != null) {
                         handleFirestoreError(exToLog, OperationType.LIST, path, auth)
                     }
                     throw error
@@ -258,9 +336,35 @@ class CatalogRepository(
         )
     }
 
+    suspend fun toggleBookmark(itemId: String, currentlyBookmarked: Boolean): Result<Boolean> = runCatching {
+        val uid = requireUserId()
+        val docRef = db.collection("users").document(uid).collection("bookmarks").document(itemId)
+        try {
+            if (currentlyBookmarked) {
+                docRef.delete().await()
+                false
+            } else {
+                docRef.set(
+                    mapOf(
+                        "userId" to uid,
+                        "itemId" to itemId,
+                        "createdAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+                true
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docRef.path, auth)
+            throw e
+        }
+    }
+
     suspend fun publishCatalogItem(
         title: String,
         description: String,
+        whatsNew: String = "",
         category: String,
         version: String,
         targetUrl: String,
@@ -268,6 +372,7 @@ class CatalogRepository(
         iconBase64: String = "",
         fileSource: UploadFileSource? = null,
         publishAsApproved: Boolean = false,
+        isFeatured: Boolean = false,
         chunkSizeBytes: Int = CatalogConstants.CHUNK_RAW_BYTES,
         onProgress: (Float) -> Unit = {}
     ): Result<String> = runCatching {
@@ -275,7 +380,9 @@ class CatalogRepository(
         val uploaderName = requireDisplayName().take(80)
         val itemDocRef = db.collection("catalog_items").document()
         val itemId = itemDocRef.id
-        val status = if (publishAsApproved && isServerAdmin()) "approved" else "pending"
+        val admin = isServerAdmin()
+        val status = if (publishAsApproved && admin) "approved" else "pending"
+        val featuredFlag = isFeatured && admin
 
         val urlPayload = CryptoVaultManager.encryptString(targetUrl.trim())
         var encryptedFileId = ""
@@ -297,6 +404,7 @@ class CatalogRepository(
         val itemMap = mapOf(
             "title" to title.trim().take(120),
             "description" to description.trim().take(2000),
+            "whatsNew" to whatsNew.trim().take(1000),
             "category" to category,
             "itemType" to if (fileSource != null) "encrypted_file" else "link",
             "version" to version.trim().ifBlank { "1.0.0" }.take(40),
@@ -308,6 +416,8 @@ class CatalogRepository(
             "sha256Checksum" to itemChecksum,
             "encryptionAlgorithm" to CatalogConstants.ENCRYPTION_ALGO,
             "status" to status,
+            "isFeatured" to featuredFlag,
+            "moderationNote" to "",
             "downloadCount" to 0L,
             "averageRating" to 0.0,
             "reviewCount" to 0L,
@@ -337,6 +447,7 @@ class CatalogRepository(
         existingItem: CatalogItem,
         title: String,
         description: String,
+        whatsNew: String = "",
         category: String,
         version: String,
         targetUrl: String,
@@ -345,6 +456,7 @@ class CatalogRepository(
         newFileSource: UploadFileSource? = null,
         removeAttachedFile: Boolean = false,
         preserveStatusIfAdmin: Boolean = false,
+        isFeatured: Boolean = existingItem.isFeatured,
         chunkSizeBytes: Int = CatalogConstants.CHUNK_RAW_BYTES,
         onProgress: (Float) -> Unit = {}
     ): Result<Unit> = runCatching {
@@ -388,9 +500,10 @@ class CatalogRepository(
         }
 
         val itemDocRef = db.collection("catalog_items").document(existingItem.id)
-        val updates = mapOf(
+        val updates = mutableMapOf<String, Any>(
             "title" to title.trim().take(120),
             "description" to description.trim().take(2000),
+            "whatsNew" to whatsNew.trim().take(1000),
             "category" to category,
             "itemType" to finalItemType,
             "version" to version.trim().ifBlank { "1.0.0" }.take(40),
@@ -405,6 +518,9 @@ class CatalogRepository(
             "status" to newStatus,
             "updatedAt" to FieldValue.serverTimestamp()
         )
+        if (isAdmin) {
+            updates["isFeatured"] = isFeatured
+        }
 
         try {
             itemDocRef.update(updates).await()
@@ -899,7 +1015,8 @@ class CatalogRepository(
     suspend fun adminModerateCatalogItem(
         itemId: String,
         newStatus: String,
-        encryptedFileId: String = ""
+        encryptedFileId: String = "",
+        moderationNote: String? = null
     ): Result<Unit> = runCatching {
         requireUserId()
         val itemRef = db.collection("catalog_items").document(itemId)
@@ -907,9 +1024,31 @@ class CatalogRepository(
             if (encryptedFileId.isNotBlank()) {
                 updateEncryptedFileAndChunksStatus(encryptedFileId, newStatus)
             }
+            val updates = mutableMapOf<String, Any>(
+                "status" to newStatus,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (moderationNote != null) {
+                updates["moderationNote"] = moderationNote.trim().take(400)
+            } else if (newStatus == "approved") {
+                updates["moderationNote"] = ""
+            }
+            itemRef.update(updates).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, itemRef.path, auth)
+            throw e
+        }
+    }
+
+    suspend fun adminSetFeatured(itemId: String, isFeatured: Boolean): Result<Unit> = runCatching {
+        requireUserId()
+        val itemRef = db.collection("catalog_items").document(itemId)
+        try {
             itemRef.update(
                 mapOf(
-                    "status" to newStatus,
+                    "isFeatured" to isFeatured,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
@@ -917,6 +1056,81 @@ class CatalogRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, itemRef.path, auth)
+            throw e
+        }
+    }
+
+    suspend fun adminApproveAllPending(pendingItems: List<CatalogItem>): Result<Int> = runCatching {
+        requireUserId()
+        var approvedCount = 0
+        for (item in pendingItems) {
+            adminModerateCatalogItem(
+                itemId = item.id,
+                newStatus = "approved",
+                encryptedFileId = item.encryptedFileId,
+                moderationNote = ""
+            ).getOrThrow()
+            approvedCount++
+        }
+        approvedCount
+    }
+
+    suspend fun publishAnnouncement(
+        title: String,
+        message: String,
+        actionUrl: String = ""
+    ): Result<String> = runCatching {
+        requireUserId()
+        val email = auth.currentUser?.email ?: CatalogConstants.ADMIN_EMAIL
+        val docRef = db.collection("announcements").document()
+        try {
+            docRef.set(
+                mapOf(
+                    "title" to title.trim().take(120),
+                    "message" to message.trim().take(500),
+                    "actionUrl" to actionUrl.trim().take(512),
+                    "active" to true,
+                    "authorEmail" to email.take(120),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            docRef.id
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path, auth)
+            throw e
+        }
+    }
+
+    suspend fun toggleAnnouncementActive(announcementId: String, active: Boolean): Result<Unit> = runCatching {
+        requireUserId()
+        val docRef = db.collection("announcements").document(announcementId)
+        try {
+            docRef.update(
+                mapOf(
+                    "active" to active,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+            throw e
+        }
+    }
+
+    suspend fun deleteAnnouncement(announcementId: String): Result<Unit> = runCatching {
+        requireUserId()
+        val docRef = db.collection("announcements").document(announcementId)
+        try {
+            docRef.delete().await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docRef.path, auth)
             throw e
         }
     }

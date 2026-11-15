@@ -32,7 +32,11 @@
         },
         "description": {
           "type": "string",
-          "description": "Detailed description, changelog, or usage instructions."
+          "description": "Detailed description or usage instructions."
+        },
+        "whatsNew": {
+          "type": "string",
+          "description": "Optional changelog / release notes for the current version."
         },
         "category": {
           "type": "string",
@@ -81,6 +85,14 @@
           "type": "string",
           "enum": ["pending", "approved", "flagged", "archived"],
           "description": "Moderation and approval visibility status."
+        },
+        "isFeatured": {
+          "type": "boolean",
+          "description": "Admin-curated spotlight flag shown in the Explore Featured carousel."
+        },
+        "moderationNote": {
+          "type": "string",
+          "description": "Optional feedback note from the admin when approving, flagging, or rejecting an upload."
         },
         "downloadCount": {
           "type": "integer",
@@ -402,6 +414,65 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Admin-published pinned hub announcement or broadcast notice shown in Explore.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Short announcement headline."
+        },
+        "message": {
+          "type": "string",
+          "description": "Announcement body text."
+        },
+        "actionUrl": {
+          "type": "string",
+          "description": "Optional external action URL."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the announcement is visible to users."
+        },
+        "authorEmail": {
+          "type": "string",
+          "description": "Publishing admin email."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp."
+        }
+      },
+      "required": ["title", "message", "active", "authorEmail", "createdAt", "updatedAt"]
+    },
+    "Bookmark": {
+      "title": "Bookmark",
+      "description": "User-saved favorite catalog item marker under /users/{userId}/bookmarks/{itemId}.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "itemId": {
+          "type": "string",
+          "description": "Bookmarked catalog item ID."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        }
+      },
+      "required": ["userId", "itemId", "createdAt"]
     }
   },
   "firestore": {
@@ -428,6 +499,14 @@
     "/moderation_reports/{reportId}": {
       "schema": { "$ref": "#/entities/ModerationReport" },
       "description": "Content moderation reports queue."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Admin-broadcast hub notices and pinned updates."
+    },
+    "/users/{userId}/bookmarks/{itemId}": {
+      "schema": { "$ref": "#/entities/Bookmark" },
+      "description": "User-saved catalog bookmarks."
     }
   }
 }

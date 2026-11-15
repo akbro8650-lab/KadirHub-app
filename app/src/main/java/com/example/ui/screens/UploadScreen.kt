@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -30,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -48,34 +50,40 @@ import androidx.compose.ui.unit.dp
 import com.example.data.model.CatalogItem
 import com.example.data.repository.UploadFileSource
 import com.example.ui.components.CatalogItemIcon
+import com.example.ui.components.GuestSignInRequiredCard
 import com.example.ui.components.StatusBadge
 import com.example.ui.components.UploadOrEditItemForm
 import com.example.ui.viewmodel.UiState
 
 @Composable
 fun UploadScreen(
+    isSignedIn: Boolean,
     myUploadsState: UiState<List<CatalogItem>>,
     editingItem: CatalogItem?,
     isBusy: Boolean,
     transferProgress: Float?,
     decryptUrl: (CatalogItem) -> String,
+    onRequestSignIn: (String) -> Unit,
     onStartEdit: (CatalogItem) -> Unit,
     onCancelEdit: () -> Unit,
     onSubmitNew: (
         title: String,
         description: String,
+        whatsNew: String,
         category: String,
         version: String,
         targetUrl: String,
         fileSizeLabel: String,
         iconBase64: String,
         fileSource: UploadFileSource?,
+        isFeatured: Boolean,
         onSuccess: () -> Unit
     ) -> Unit,
     onSubmitEdit: (
         existingItem: CatalogItem,
         title: String,
         description: String,
+        whatsNew: String,
         category: String,
         version: String,
         targetUrl: String,
@@ -83,12 +91,31 @@ fun UploadScreen(
         iconBase64: String,
         newFileSource: UploadFileSource?,
         removeAttachedFile: Boolean,
+        isFeatured: Boolean,
         onSuccess: () -> Unit
     ) -> Unit,
     onDeleteItem: (CatalogItem) -> Unit,
     onOpenDetail: (CatalogItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    if (!isSignedIn) {
+        Box(
+            modifier = modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(modifier = Modifier.widthIn(max = 520.dp)) {
+                GuestSignInRequiredCard(
+                    title = "Sign In to Upload & Manage",
+                    subtitle = "Upload APKs up to 50 MB, attach custom icons, post changelogs, and track admin approval status with your Google account.",
+                    onSignInClick = {
+                        onRequestSignIn("Sign in with Google to upload APKs, custom icons, or download links.")
+                    }
+                )
+            }
+        }
+        return
+    }
+
     var selectedSubTab by remember { mutableIntStateOf(0) }
     var deleteConfirmTarget by remember { mutableStateOf<CatalogItem?>(null) }
 
@@ -152,8 +179,8 @@ fun UploadScreen(
                     isAdminMode = false,
                     isBusy = isBusy,
                     transferProgress = transferProgress,
-                    onSubmitNew = { title, desc, cat, ver, url, size, icon, file, onSuccess ->
-                        onSubmitNew(title, desc, cat, ver, url, size, icon, file) {
+                    onSubmitNew = { title, desc, whatsNew, cat, ver, url, size, icon, file, isFeatured, onSuccess ->
+                        onSubmitNew(title, desc, whatsNew, cat, ver, url, size, icon, file, isFeatured) {
                             onSuccess()
                             selectedSubTab = 1
                         }
@@ -237,7 +264,7 @@ private fun MyUploadsList(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Share an APK (up to 50 MB) or link using the Upload tab. Once approved by the admin, it goes live in Explore.",
+                            text = "Share an APK (up to 50 MB) or link using the Upload tab. Once approved by admin, it goes live in Explore.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -288,6 +315,33 @@ private fun MyUploadsList(
                                         )
                                     }
                                     StatusBadge(status = item.status)
+                                }
+
+                                if (item.moderationNote.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Info,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Admin note: ${item.moderationNote}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                        }
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.height(8.dp))

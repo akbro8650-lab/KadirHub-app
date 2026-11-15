@@ -128,12 +128,68 @@ beforeEach(async () => {
   }
 });
 
-test("Unauthenticated user cannot list or read catalog_items", async () => {
+test("Guests can view approved catalog_items & visible reviews, but fail on unfiltered list, pending items, files, download increments, or writes", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db
+      .collection("catalog_items")
+      .doc("item_approved")
+      .set(validCatalogItem(ADMIN_UID, { status: "approved", whatsNew: "Initial release", isFeatured: true }));
+    await db
+      .collection("catalog_items")
+      .doc("item_pending")
+      .set(validCatalogItem(ALICE_UID, { status: "pending" }));
+    await db
+      .collection("encrypted_files")
+      .doc("file_approved")
+      .set(validEncryptedFile(ADMIN_UID, "item_approved", { status: "approved" }));
+    await db
+      .collection("reviews")
+      .doc("item_approved_alice")
+      .set(validReview(ALICE_UID, "item_approved", { moderationStatus: "visible" }));
+    await db
+      .collection("announcements")
+      .doc("ann_1")
+      .set({
+        title: "Welcome to KadirHub",
+        message: "New 50 MB vault live!",
+        actionUrl: "",
+        active: true,
+        authorEmail: ADMIN_EMAIL,
+        createdAt: serverNow(),
+        updatedAt: serverNow(),
+      });
+  });
+
   const unauthDb = testEnv.unauthenticatedContext().firestore();
-  await assertFails(
+  // Allowed: filtered approved catalog, visible reviews, active announcements
+  await assertSucceeds(
     unauthDb.collection("catalog_items").where("status", "==", "approved").get()
   );
-  await assertFails(unauthDb.collection("catalog_items").doc("item_1").get());
+  await assertSucceeds(unauthDb.collection("catalog_items").doc("item_approved").get());
+  await assertSucceeds(
+    unauthDb.collection("reviews").where("itemId", "==", "item_approved").where("moderationStatus", "==", "visible").get()
+  );
+  await assertSucceeds(
+    unauthDb.collection("announcements").where("active", "==", true).get()
+  );
+
+  // Blocked for guests: unfiltered list, pending item, encrypted_files, download increment, create/write, bookmarks
+  await assertFails(unauthDb.collection("catalog_items").get());
+  await assertFails(unauthDb.collection("catalog_items").doc("item_pending").get());
+  await assertFails(unauthDb.collection("encrypted_files").doc("file_approved").get());
+  await assertFails(
+    unauthDb.collection("catalog_items").doc("item_approved").update({
+      downloadCount: 1,
+      updatedAt: serverNow(),
+    })
+  );
+  await assertFails(
+    unauthDb.collection("catalog_items").doc("item_guest_write").set(validCatalogItem("guest"))
+  );
+  await assertFails(
+    unauthDb.collection("users").doc(ALICE_UID).collection("bookmarks").doc("item_approved").get()
+  );
 });
 
 test("Email spoofing with email_verified=false cannot self-approve catalog items", async () => {
@@ -476,3 +532,93 @@ test("Moderation reports are private to reporter and admin", async () => {
     })
   );
 });
+
+test("User bookmarks are strictly isolated per user and blocked for guests or other users", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const now = serverNow();
+
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("bookmarks").doc("item_1").set({
+      userId: ALICE_UID,
+      itemId: "item_1",
+      createdAt: now,
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("bookmarks").get()
+  );
+  // Bob cannot read or write Alice's bookmarks
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("bookmarks").get()
+  );
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("bookmarks").doc("item_2").set({
+      userId: BOB_UID,
+      itemId: "item_2",
+      createdAt: now,
+    })
+  );
+  // Alice can delete her own bookmark
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("bookmarks").doc("item_1").delete()
+  );
+});
+
+test("Admin can manage announcements, featured flags, and moderation notes while regular users cannot", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID, { email: "alice@example.com", email_verified: true }).firestore();
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, { email: ADMIN_EMAIL, email_verified: true }).firestore();
+  const now = serverNow();
+
+  // Regular user cannot create an announcement or self-feature an item
+  await assertFails(
+    aliceDb.collection("announcements").doc("ann_alice").set({
+      title: "Fake Notice",
+      message: "Unauthorized",
+      actionUrl: "",
+      active: true,
+      authorEmail: "alice@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    aliceDb.collection("catalog_items").doc("item_featured_attempt").set(
+      validCatalogItem(ALICE_UID, { isFeatured: true, status: "pending" })
+    )
+  );
+
+  // Admin can create announcement & update isFeatured + moderationNote
+  await assertSucceeds(
+    adminDb.collection("announcements").doc("ann_kadir").set({
+      title: "KadirHub v2.0 Launch",
+      message: "Guest browsing, bookmarks, and analytics are live!",
+      actionUrl: "https://www.tiktok.com/@kadirofficial007",
+      active: true,
+      authorEmail: ADMIN_EMAIL,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("catalog_items").doc("item_admin").set(
+      validCatalogItem(ADMIN_UID, {
+        status: "approved",
+        whatsNew: "Added dark/light theme & spotlight",
+        isFeatured: true,
+        moderationNote: "Verified clean APK",
+      })
+    )
+  );
+  await assertSucceeds(
+    adminDb.collection("announcements").doc("ann_kadir").update({
+      active: false,
+      updatedAt: serverNow(),
+    })
+  );
+  // Regular user cannot read inactive announcement
+  await assertFails(
+    aliceDb.collection("announcements").doc("ann_kadir").get()
+  );
+});
+
